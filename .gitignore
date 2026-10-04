@@ -1,3 +1,7 @@
-.pio/
-.vscode/
-include/secrets.h
+# Arduino App Lab cache
+.cache/
+
+# XIAO (PlatformIO)
+xiao/.pio/
+xiao/.vscode/
+xiao/include/secrets.h

@@ -58,7 +58,7 @@ audio**. Camera frames and audio never go over I²C.
 | GND                     | GND      | —      | MAX98357A GND, UNO Q GND |
 
 D11/D12 are avoided for audio because on the Sense board they are GPIO42/GPIO41, which the
-onboard microphone uses. Camera pins are listed in `include/camera_pins.h`.
+onboard microphone uses. Camera pins are listed in `xiao/include/camera_pins.h`.
 
 ### MAX98357A → speaker
 
@@ -129,45 +129,65 @@ MAX98357A from the XIAO's 5V pin.
 
 ## Code base
 
-The repository holds two firmware targets:
+The repository holds two firmware targets, laid out so each tool opens its own part:
 
-- **XIAO ESP32S3 Sense:** a PlatformIO project at the repo root.
-- **UNO Q:** Arduino App Lab apps under `unoq/`. Each app has an STM32 sketch and a Linux-side
-  Python script.
+- **UNO Q:** the repo root **is** the Arduino App Lab app (`app.yaml` + `sketch/` + `python/`).
+  Clone it into `~/ArduinoApps/dorbel` on the UNO Q and it shows up in App Lab as **Dorbel**.
+- **XIAO ESP32S3 Sense:** a PlatformIO project in `xiao/`. Open **that folder** (not the repo
+  root) in VS Code / PlatformIO.
 
 ```
-platformio.ini            XIAO: board, PSRAM (qio_opi), huge_app partition, USB-CDC serial
-include/
-  camera_pins.h           OV2640 pin map for the Sense board
-  dorbel_protocol.h       I²C address, CMD_* and STATUS_* values (mirrored in unoq sketches)
-  mic_capture.h           mic WAV capture API
-  mic_level.h             live mic level meter API
-  speaker_test.h          speaker API: initSpeaker(), playTone(), playChime()
-  i2c_slave_test.h        I²C slave API
-  secrets.example.h       Wi-Fi credentials template → copy to secrets.h (gitignored)
-src/
-  main.cpp                APP_MODE selector + camera setup + Wi-Fi connect
-  app_httpd.cpp           MJPEG HTTP server: "/" page and "/stream"
-  speaker_test.cpp        MAX98357A over I2S port 1: tones + "ding-dong" chime
-  mic_level.cpp           live mic RMS meter over serial (no SD card needed)
-  mic_capture.cpp         10 s mic clip: /mic_test.wav if an SD card is present, else RMS over serial
-  i2c_slave_test.cpp      I²C slave at 0x08: logs commands, answers status, plays chime on RING
-unoq/                     UNO Q App Lab apps (app.yaml + sketch/ + python/)
+app.yaml                  App Lab app metadata ("Dorbel")
+sketch/                   UNO Q STM32 sketch: button, RGB, I²C master, Bridge RPC (steps 13–14)
+  sketch.ino
+  sketch.yaml             arduino:zephyr + Arduino_RouterBridge
+python/
+  main.py                 Linux side: polls the Bridge RPC API
+xiao/                     XIAO PlatformIO project — open this folder in PlatformIO
+  platformio.ini          board, PSRAM (qio_opi), huge_app partition, USB-CDC serial
+  include/
+    camera_pins.h         OV2640 pin map for the Sense board
+    dorbel_protocol.h     I²C address, CMD_* and STATUS_* values (mirrored in UNO Q sketches)
+    mic_capture.h         mic WAV capture API
+    mic_level.h           live mic level meter API
+    speaker_test.h        speaker API: initSpeaker(), playTone(), playChime()
+    i2c_slave_test.h      I²C slave API
+    secrets.example.h     Wi-Fi credentials template → copy to secrets.h (gitignored)
+  src/
+    main.cpp              APP_MODE selector + camera setup + Wi-Fi connect
+    app_httpd.cpp         MJPEG HTTP server: "/" page and "/stream"
+    speaker_test.cpp      MAX98357A over I2S port 1: tones + "ding-dong" chime
+    mic_level.cpp         live mic RMS meter over serial (no SD card needed)
+    mic_capture.cpp       10 s mic clip: /mic_test.wav if an SD card is present, else RMS over serial
+    i2c_slave_test.cpp    I²C slave at 0x08: logs commands, answers status, plays chime on RING
+unoq_tests/               earlier UNO Q step apps (each is app.yaml + sketch/ + python/)
   i2c_master_test/        step 10: PING + RING over I²C, prints XIAO status
   io_test/                step 11: button + RGB LED
   doorbell_ring/          step 12: button → I²C RING → XIAO chime
-  dorbel_bridge/          steps 13–14: step 12 + Bridge RPC API + python/main.py poller
 stl/                      enclosure models (base, cover, body)
 ```
+
+### Running a UNO Q step test app
+
+App Lab only lists apps that sit directly in `~/ArduinoApps/`. Because the repo root is the main
+app, the step apps in `unoq_tests/` are not listed. To run one, copy it next to the main app:
+
+```bash
+cp -r ~/ArduinoApps/dorbel/unoq_tests/io_test ~/ArduinoApps/dorbel-io-test
+```
+
+It then appears in App Lab (e.g. "Dorbel IO Test"). Delete the copy when you're done. Edit the
+original in `unoq_tests/` if you want the change kept in git.
 
 ### Selecting a subsystem test
 
 Each subsystem is tested on its own before integration. To pick one, edit this line in
-`src/main.cpp`:
+`xiao/src/main.cpp`:
 
 ```cpp
 #define APP_MODE APP_MODE_MIC_LEVEL   // or APP_MODE_CAMERA_STREAM / APP_MODE_MIC_CAPTURE / APP_MODE_SPEAKER_TEST
 #define APP_MODE APP_MODE_I2C_SLAVE   // or _SPEAKER_TEST / _MIC_LEVEL / _MIC_CAPTURE / _CAMERA_STREAM
+```
 
 ### Arduino core version
 
@@ -188,6 +208,7 @@ time after integration.
 ### Build and flash
 
 ```bash
+cd xiao                      # the PlatformIO project lives here
 cp include/secrets.example.h include/secrets.h   # first time only; fill in Wi-Fi
 pio run                      # build
 pio run -t upload            # flash (close any open serial monitor first)
@@ -210,10 +231,10 @@ PlatformIO's CLI is at `~/.platformio/penv/Scripts/pio.exe` if `pio` is not on y
 | 2    | Onboard PDM mic, live RMS (no SD)           | XIAO  | `APP_MODE_MIC_LEVEL`                           | Running on the board; voice response to confirm |
 | 2b   | PDM mic → WAV clip (SD optional)            | XIAO  | `APP_MODE_MIC_CAPTURE`                         | Builds; SD-free fallback untested |
 | 3    | Camera MJPEG stream → browser               | XIAO  | `APP_MODE_CAMERA_STREAM`                       | Builds, re-test on the board |
-| 4/10 | I²C link: UNO Q master ↔ XIAO `0x08`        | both  | `APP_MODE_I2C_SLAVE` + `unoq/i2c_master_test`  | XIAO flashed and running; UNO Q compiles, needs a test on the board |
-| 11   | Button + RGB LED                            | UNO Q | `unoq/io_test`                                 | Compiles, needs a test on the board |
-| 12   | Button → I²C RING → XIAO chime              | both  | `unoq/doorbell_ring` + `APP_MODE_I2C_SLAVE`    | Compiles, needs a test on the board |
-| 13–14| STM32 ↔ Linux Bridge RPC + Python poller    | UNO Q | `unoq/dorbel_bridge`                           | Compiles, needs a test on the board |
+| 4/10 | I²C link: UNO Q master ↔ XIAO `0x08`        | both  | `APP_MODE_I2C_SLAVE` + `unoq_tests/i2c_master_test`  | XIAO flashed and running; UNO Q compiles, needs a test on the board |
+| 11   | Button + RGB LED                            | UNO Q | `unoq_tests/io_test`                                 | Compiles, needs a test on the board |
+| 12   | Button → I²C RING → XIAO chime              | both  | `unoq_tests/doorbell_ring` + `APP_MODE_I2C_SLAVE`    | Compiles, needs a test on the board |
+| 13–14| STM32 ↔ Linux Bridge RPC + Python poller    | UNO Q | the main **Dorbel** app (repo root)                           | Compiles, needs a test on the board |
 | –    | Wi-Fi audio (mic up, speaker down)          | XIAO  | —                                              | Planned |
 | –    | Flask dashboard + Telegram (from Trillo)    | UNO Q | —                                              | Planned |
 | –    | Integration + battery power                 | both  | —                                              | Planned |
@@ -260,9 +281,9 @@ second.
 
 ### Subsystem 3: camera live stream (XIAO → Wi-Fi → browser)
 
-1. Copy `include/secrets.example.h` to `include/secrets.h` and fill in the network details. The
+1. Copy `xiao/include/secrets.example.h` to `xiao/include/secrets.h` and fill in the network details. The
    XIAO only supports **2.4 GHz** Wi-Fi.
-2. Set `APP_MODE_CAMERA_STREAM` in `src/main.cpp`, then flash.
+2. Set `APP_MODE_CAMERA_STREAM` in `xiao/src/main.cpp`, then flash.
 3. Open the serial monitor. It prints a Wi-Fi scan (and warns if your SSID isn't visible), then
    `Connected! Open http://<ip>/`.
 4. From a device on the same network, open `http://<ip>/` for the viewer page, or
@@ -271,7 +292,7 @@ second.
 
 | Symptom                              | Likely cause                                                      |
 |--------------------------------------|-------------------------------------------------------------------|
-| `Camera init failed with error 0x…`  | Sense board not seated on the XIAO, or PSRAM not enabled (`qio_opi` in `platformio.ini`). |
+| `Camera init failed with error 0x…`  | Sense board not seated on the XIAO, or PSRAM not enabled (`qio_opi` in `xiao/platformio.ini`). |
 | SSID "NOT in the scan results"       | Network is 5 GHz-only, out of range, or the SSID doesn't match exactly. |
 | Connects, but the page won't load    | Browser is on a different network, or client isolation on a phone hotspot. |
 | Image is upside down                 | Change `set_vflip` in `configureCamera()`.                        |
@@ -310,8 +331,8 @@ D20/D21, change `#define DORBEL_WIRE Wire2` to `Wire` in the master sketch.
 **XIAO (slave).** Set `APP_MODE_I2C_SLAVE`, then flash. The serial output should show
 `XIAO I2C slave ready at 0x08`, followed by a `[stats]` line every 5 s.
 
-**UNO Q (master), step 10.** Open `unoq/i2c_master_test` in Arduino App Lab and run it. If you
-can't open the folder directly, create a new app and paste in `sketch/sketch.ino`. All UNO Q
+**UNO Q (master), step 10.** Copy `unoq_tests/i2c_master_test` into `~/ArduinoApps/` (see
+"Running a UNO Q step test app"), then open it in Arduino App Lab and run it. All UNO Q
 sketches use `Arduino_RouterBridge` (declared in each `sketch/sketch.yaml`) and print with
 `Monitor`, because on the UNO Q MCU, `Serial` only reaches the D0/D1 UART pins. These sketches
 are adapted from the reference ones in two ways: `Wire` → `Wire2` (A4/A5) and `Serial` →
@@ -343,8 +364,9 @@ speaker failed to start.
 To compile all UNO Q sketches from the command line:
 
 ```bash
-for s in i2c_master_test io_test doorbell_ring dorbel_bridge; do
-  arduino-cli compile --fqbn arduino:zephyr:unoq unoq/$s/sketch
+arduino-cli compile --fqbn arduino:zephyr:unoq sketch
+for s in i2c_master_test io_test doorbell_ring; do
+  arduino-cli compile --fqbn arduino:zephyr:unoq unoq_tests/$s/sketch
 done
 ```
 
@@ -359,7 +381,7 @@ UNO Q D5 ──220Ω── G ├── RGB LED, common cathode → GND
 UNO Q D6 ──220Ω── B ┘
 ```
 
-Run `unoq/io_test`.
+Run `unoq_tests/io_test`.
 
 **Pass condition:** the LED is **green** after boot. Holding the button turns it **red** and
 prints `DOORBELL PRESSED`.
@@ -371,7 +393,7 @@ BUTTON → UNO Q → I²C RING (0x02) → XIAO → MAX98357A → SPEAKER
 ```
 
 1. Flash the XIAO in `APP_MODE_I2C_SLAVE`. The speaker must be wired as in Subsystem 1.
-2. Run `unoq/doorbell_ring` on the UNO Q.
+2. Run `unoq_tests/doorbell_ring` on the UNO Q.
 
 The button is debounced and triggers once per press. Presses within 1.5 s of a ring are ignored
 while the chime plays. The UNO Q polls the XIAO status every second without blocking.
@@ -387,7 +409,7 @@ and the speaker plays the chime. Unplugging the XIAO turns the LED blue.
 
 ### UNO Q STM32 ↔ Linux Bridge (steps 13–14)
 
-`unoq/dorbel_bridge` is step 12 plus a small RPC API that the STM32 exposes to Python on the
+the main **Dorbel** app (repo root) is step 12 plus a small RPC API that the STM32 exposes to Python on the
 Linux side with `Bridge.provide_safe()`:
 
 | RPC                    | Returns                                                     |
