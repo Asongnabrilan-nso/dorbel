@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dorbel</title>
+<style>
+  :root { --bg:#101214; --panel:#1a1d21; --line:#2a2e34; --text:#e8eaed; --dim:#8a9099;
+          --green:#3ccf6e; --red:#ff5a52; --amber:#ffb53d; --blue:#4da3ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width:560px; margin:0 auto; padding:16px; }
+  h1 { margin:0 0 12px; text-align:center; letter-spacing:.3em; font-size:20px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+            margin-bottom:12px; overflow:hidden; }
+  .video { position:relative; aspect-ratio:4/3; background:#000; }
+  .video img { width:100%; height:100%; object-fit:contain; display:block; }
+  .video .msg { position:absolute; inset:0; display:flex; align-items:center;
+                justify-content:center; color:var(--dim); text-align:center; padding:16px; }
+  .rows { padding:6px 16px; }
+  .row { display:flex; justify-content:space-between; padding:7px 0;
+         border-bottom:1px solid var(--line); }
+  .row:last-child { border-bottom:0; }
+  .row b { font-weight:600; color:var(--dim); letter-spacing:.08em; font-size:13px; }
+  .val::before { content:"●"; margin-right:8px; }
+  .ok { color:var(--green); } .bad { color:var(--red); } .warn { color:var(--amber); }
+  .idle { color:var(--dim); } .live { color:var(--blue); }
+  .talk { padding:20px 16px; text-align:center; }
+  button { font:inherit; color:var(--text); background:#262a30; border:1px solid var(--line);
+           border-radius:10px; padding:10px 16px; cursor:pointer; touch-action:none;
+           user-select:none; -webkit-user-select:none; }
+  #talk { width:100%; padding:22px; font-size:20px; letter-spacing:.2em; font-weight:700; }
+  #talk.on { background:var(--red); border-color:var(--red); }
+  #listen.on { background:var(--blue); border-color:var(--blue); }
+  .hint { color:var(--dim); font-size:13px; margin-top:10px; }
+  .hint.warn { color:var(--amber); }
+  .events { padding:10px 16px; }
+  .events h2 { font-size:13px; letter-spacing:.08em; color:var(--dim); margin:0 0 6px; }
+  .events ol { list-style:none; margin:0; padding:0; max-height:240px; overflow:auto; }
+  .events li { padding:3px 0; } .events time { color:var(--dim); margin-right:10px;
+           font-variant-numeric:tabular-nums; }
+  footer { text-align:center; font-size:13px; } footer a { color:var(--dim); }
+</style>
+</head>
+<body>
+<main>
+  <h1>DORBEL</h1>
+
+  <section class="video">
+    <img id="video" alt="">
+    <div class="msg" id="videoMsg">Waiting for the XIAO camera…</div>
+  </section>
+
+  <section class="rows">
+    <div class="row"><b>SYSTEM</b><span class="val idle" id="sSystem">—</span></div>
+    <div class="row"><b>DOOR</b><span class="val idle" id="sDoor">NO SENSOR</span></div>
+    <div class="row"><b>VISITOR</b><span class="val idle" id="sVisitor">—</span></div>
+    <div class="row"><b>DOORBELL</b><span class="val idle" id="sBell">—</span></div>
+    <div class="row"><b>INTERCOM</b><span class="val idle" id="sTalk">—</span></div>
+  </section>
+
+  <section class="talk">
+    <button id="talk">HOLD TO TALK</button>
+    <div style="margin-top:10px"><button id="listen">🔊 Listen to door</button></div>
+    <div class="hint" id="talkHint">Hold the button (or the space bar) while you speak.</div>
+  </section>
+
+  <section class="events">
+    <h2>EVENTS</h2>
+    <ol id="events"></ol>
+  </section>
+
+  <footer><a href="/users">Telegram users</a></footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const RATE = 16000; // XIAO audio: 16 kHz, 16-bit LE mono PCM both ways
+let xiaoIp = "";
+
+// ---------------------------------------------------------------- status
+function setVal(el, text, cls) { el.textContent = text; el.className = "val " + cls; }
+
+async function refresh() {
+  let s;
+  try { s = await (await fetch("/api/state")).json(); }
+  catch { setVal($("sSystem"), "DASHBOARD OFFLINE", "bad"); return; }
+
+  if (!s.mcu_online)       setVal($("sSystem"), "MCU OFFLINE", "bad");
+  else if (!s.xiao_online) setVal($("sSystem"), "XIAO OFFLINE", "bad");
+  else if (!s.xiao_wifi)   setVal($("sSystem"), "XIAO NO WI-FI", "warn");
+  else                     setVal($("sSystem"), "ONLINE", "ok");
+
+  if (s.door === null) setVal($("sDoor"), "NO SENSOR", "idle");
+  else setVal($("sDoor"), s.door ? "OPEN" : "CLOSED", s.door ? "warn" : "ok");
+  setVal($("sVisitor"), s.visitor_present ? "PRESENT" : "NONE", s.visitor_present ? "warn" : "idle");
+  setVal($("sBell"), s.doorbell_pressed ? "PRESSED" : "IDLE", s.doorbell_pressed ? "bad" : "idle");
+  setVal($("sTalk"), s.talking ? "TALKING" : (ws && ws.readyState === 1 ? "LISTENING" : "IDLE"),
+         s.talking ? "live" : "idle");
+
+  if (s.xiao_ip !== xiaoIp && s.xiao_wifi) {
+    xiaoIp = s.xiao_ip;
+    $("video").src = `http://${xiaoIp}:81/stream`;
+  }
+  if (!s.xiao_wifi || !xiaoIp) $("videoMsg").textContent = "Waiting for the XIAO camera…";
+
+  $("events").innerHTML = s.events.map(e =>
+    `<li><time>${e.time}</time>${e.text.replace(/[<>&]/g, "")}</li>`).join("");
+}
+$("video").onload = () => $("videoMsg").style.display = "none";
+$("video").onerror = () => {
+  $("videoMsg").style.display = "flex";
+  $("videoMsg").textContent = "Camera stream unavailable (only one viewer at a time).";
+  setTimeout(() => { if (xiaoIp) $("video").src = `http://${xiaoIp}:81/stream?t=${Date.now()}`; }, 3000);
+};
+setInterval(refresh, 1000);
+refresh();
+
+// -------------------------------------------------------------- intercom
+let ctx = null, ws = null, playAt = 0, talking = false;
+let mic = null, rsPos = 0;
+
+function audioCtx() {
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (ctx.state === "suspended") ctx.resume();
+  return ctx;
+}
+
+function connect() {
+  if (ws && ws.readyState <= 1) return ws;
+  if (!xiaoIp) { hint("The XIAO's address isn't known yet.", true); return null; }
+  ws = new WebSocket(`ws://${xiaoIp}/audio`);
+  ws.binaryType = "arraybuffer";
+  ws.onmessage = (e) => { if (typeof e.data !== "string" && !talking) play(e.data); };
+  ws.onclose = () => { $("listen").classList.remove("on"); };
+  return ws;
+}
+
+// Visitor audio: schedule each 16 kHz chunk right after the previous one.
+function play(buf) {
+  const c = audioCtx(), pcm = new Int16Array(buf);
+  const b = c.createBuffer(1, pcm.length, RATE), ch = b.getChannelData(0);
+  for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
+  const src = c.createBufferSource();
+  src.buffer = b; src.connect(c.destination);
+  const now = c.currentTime;
+  if (playAt < now + 0.05 || playAt > now + 0.6) playAt = now + 0.1; // resync, cap latency
+  src.start(playAt);
+  playAt += b.duration;
+}
+
+// Homeowner audio: browser rate -> 16 kHz by averaging, then Int16.
+function downsample(input, inRate) {
+  const ratio = inRate / RATE, out = new Int16Array(Math.ceil(input.length / ratio) + 1);
+  let n = 0;
+  for (; rsPos < input.length; rsPos += ratio) {
+    const a = Math.floor(rsPos), z = Math.min(input.length, Math.floor(rsPos + ratio));
+    let sum = 0;
+    for (let i = a; i < z; i++) sum += input[i];
+    const v = Math.max(-1, Math.min(1, (sum / Math.max(1, z - a)) * 0.9));
+    out[n++] = v * 32767;
+  }
+  rsPos -= input.length;
+  return out.subarray(0, n);
+}
+
+async function startMic() {
+  if (mic) return true;
+  if (!window.isSecureContext || !navigator.mediaDevices) {
+    hint("This browser blocks the microphone on plain http://. See README: allow this " +
+         "address in chrome://flags/#unsafely-treat-insecure-origin-as-secure.", true);
+    return false;
+  }
+  try {
+    const c = audioCtx();
+    const stream = await navigator.mediaDevices.getUserMedia(
+      { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const source = c.createMediaStreamSource(stream);
+    const proc = c.createScriptProcessor(1024, 1, 1);
+    const mute = c.createGain(); mute.gain.value = 0; // processor must reach the output to run
+    proc.onaudioprocess = (e) => {
+      if (!talking || !ws || ws.readyState !== 1) return;
+      ws.send(downsample(e.inputBuffer.getChannelData(0), c.sampleRate).buffer);
+    };
+    source.connect(proc); proc.connect(mute); mute.connect(c.destination);
+    mic = { stream, proc };
+    return true;
+  } catch (err) {
+    hint("Microphone permission denied: " + err.message, true);
+    return false;
+  }
+}
+
+function hint(text, warn) { $("talkHint").textContent = text; $("talkHint").className = "hint" + (warn ? " warn" : ""); }
+
+async function talkStart() {
+  if (talking) return;
+  audioCtx();
+  const sock = connect();
+  if (!sock || !(await startMic())) return;
+  talking = true; rsPos = 0;
+  $("talk").classList.add("on"); $("talk").textContent = "TALKING…";
+  const go = () => { if (talking) sock.send("talk:1"); };
+  sock.readyState === 1 ? go() : sock.addEventListener("open", go, { once: true });
+  $("listen").classList.add("on");
+}
+
+function talkStop() {
+  if (!talking) return;
+  talking = false;
+  $("talk").classList.remove("on"); $("talk").textContent = "HOLD TO TALK";
+  if (ws && ws.readyState === 1) ws.send("talk:0");
+  playAt = 0;
+}
+
+const t = $("talk");
+t.addEventListener("pointerdown", (e) => { e.preventDefault(); t.setPointerCapture(e.pointerId); talkStart(); });
+["pointerup", "pointercancel", "lostpointercapture"].forEach(ev => t.addEventListener(ev, talkStop));
+t.addEventListener("contextmenu", (e) => e.preventDefault());
+document.addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat) { e.preventDefault(); talkStart(); } });
+document.addEventListener("keyup", (e) => { if (e.code === "Space") talkStop(); });
+
+$("listen").onclick = () => {
+  if (ws && ws.readyState <= 1) { ws.close(); ws = null; $("listen").classList.remove("on"); return; }
+  audioCtx();
+  if (connect()) $("listen").classList.add("on");
+};
+</script>
+</body>
+</html>

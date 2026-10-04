@@ -14,3 +14,6 @@ void playTone(float frequency, int durationMs);
 
 // The doorbell "ding-dong" (~0.9 s, blocking).
 void playChime();
+
+// Writes 16 kHz mono samples to the amplifier (blocks while the DMA is full).
+void speakerWrite(const int16_t *samples, size_t count);

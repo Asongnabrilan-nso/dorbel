@@ -15,7 +15,7 @@ static int16_t buffer[256];
 // Port of the ESP_I2S reference sketch to the arduino-esp32 core 2.x legacy
 // driver (ESP_I2S.h only exists in core 3.x): PDM RX, 16 kHz, 16-bit mono.
 // Needs no SD card - it only reads samples and reports their level.
-static bool initMic() {
+bool initMic() {
   i2s_config_t config = {};
   config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM);
   config.sample_rate = SAMPLE_RATE;
@@ -79,4 +79,10 @@ void loopMicLevel() {
   Serial.println(rms);
 
   delay(50);
+}
+
+size_t micRead(int16_t *samples, size_t count) {
+  size_t bytesRead = 0;
+  i2s_read(MIC_I2S_PORT, samples, count * sizeof(int16_t), &bytesRead, portMAX_DELAY);
+  return bytesRead / sizeof(int16_t);
 }

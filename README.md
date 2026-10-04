@@ -101,7 +101,10 @@ V1 has no door sensor. The reed switch on D7 from the original plan has been dro
 | UNO Q → XIAO | `CMD_RING`     | `0x02` |
 | UNO Q → XIAO | `CMD_TALK_ON`  | `0x03` |
 | UNO Q → XIAO | `CMD_TALK_OFF` | `0x04` |
-| XIAO → UNO Q | status byte (bit flags) | `STATUS_ALIVE` 0x01 (becomes Wi-Fi up later), `STATUS_CAMERA` 0x02, `STATUS_AUDIO` 0x04, `STATUS_TALK` 0x08 |
+| UNO Q → XIAO | `CMD_GET_IP`   | `0x05`. The next read returns 4 bytes, the XIAO's IPv4 `a.b.c.d` (`0.0.0.0` = no Wi-Fi) |
+| XIAO → UNO Q | status byte (bit flags) | `STATUS_ALIVE` 0x01 (Wi-Fi connected in `APP_MODE_DORBEL`), `STATUS_CAMERA` 0x02, `STATUS_AUDIO` 0x04, `STATUS_TALK` 0x08 (homeowner talking) |
+
+The UNO Q learns the XIAO's IP over I²C, so the dashboard finds the camera without any setup.
 
 ---
 
@@ -137,12 +140,17 @@ The repository holds two firmware targets, laid out so each tool opens its own p
   root) in VS Code / PlatformIO.
 
 ```
-app.yaml                  App Lab app metadata ("Dorbel")
-sketch/                   UNO Q STM32 sketch: button, RGB, I²C master, Bridge RPC (steps 13–14)
+app.yaml                  App Lab app metadata ("Dorbel"), exposes dashboard port 8000
+sketch/                   UNO Q STM32 sketch: button, RGB, I²C master, Bridge RPC
   sketch.ino
   sketch.yaml             arduino:zephyr + Arduino_RouterBridge
-python/
-  main.py                 Linux side: polls the Bridge RPC API
+python/                   Linux side, standard library only (no pip installs)
+  main.py                 polls the Bridge, keeps state + event log
+  dashboard.py            HTTP server on :8000 (page + JSON API)
+  dashboard.html          video, status, push-to-talk, events
+  users.html              enable/disable Telegram users
+  notifier.py             Telegram bot: /start registration + door alerts with photo
+  dorbel_config_example.py  settings template → copy to dorbel_config.py (gitignored)
 xiao/                     XIAO PlatformIO project — open this folder in PlatformIO
   platformio.ini          board, PSRAM (qio_opi), huge_app partition, USB-CDC serial
   include/
@@ -151,11 +159,15 @@ xiao/                     XIAO PlatformIO project — open this folder in Platfo
     mic_capture.h         mic WAV capture API
     mic_level.h           live mic level meter API
     speaker_test.h        speaker API: initSpeaker(), playTone(), playChime()
-    i2c_slave_test.h      I²C slave API
+    i2c_slave_test.h      I²C slave test API
+    i2c_link.h            shared I²C slave: command queue, status byte, IP reply
+    intercom.h            WebSocket push-to-talk intercom API
     secrets.example.h     Wi-Fi credentials template → copy to secrets.h (gitignored)
   src/
-    main.cpp              APP_MODE selector + camera setup + Wi-Fi connect
-    app_httpd.cpp         MJPEG HTTP server: "/" page and "/stream"
+    main.cpp              APP_MODE selector, camera setup, Wi-Fi, APP_MODE_DORBEL integration
+    app_httpd.cpp         HTTP servers: test-mode "/" + "/stream"; Dorbel mode :80 + :81
+    intercom.cpp          ws://<xiao>/audio: mic → browser, browser → speaker, chime
+    i2c_link.cpp          I²C slave at 0x08 (used by the test mode and Dorbel mode)
     speaker_test.cpp      MAX98357A over I2S port 1: tones + "ding-dong" chime
     mic_level.cpp         live mic RMS meter over serial (no SD card needed)
     mic_capture.cpp       10 s mic clip: /mic_test.wav if an SD card is present, else RMS over serial
@@ -185,8 +197,7 @@ Each subsystem is tested on its own before integration. To pick one, edit this l
 `xiao/src/main.cpp`:
 
 ```cpp
-#define APP_MODE APP_MODE_MIC_LEVEL   // or APP_MODE_CAMERA_STREAM / APP_MODE_MIC_CAPTURE / APP_MODE_SPEAKER_TEST
-#define APP_MODE APP_MODE_I2C_SLAVE   // or _SPEAKER_TEST / _MIC_LEVEL / _MIC_CAPTURE / _CAMERA_STREAM
+#define APP_MODE APP_MODE_DORBEL   // V1 (default), or _I2C_SLAVE / _SPEAKER_TEST / _MIC_LEVEL / _MIC_CAPTURE / _CAMERA_STREAM
 ```
 
 ### Arduino core version
@@ -217,9 +228,8 @@ pio device monitor           # 115200 baud
 
 PlatformIO's CLI is at `~/.platformio/penv/Scripts/pio.exe` if `pio` is not on your PATH.
 
-> Serial runs over native USB. `setup()` waits for a USB host (`while (!Serial)`), so for now
-> the firmware only starts when the board is connected to a computer. Remove that wait before
-> running on battery.
+> Serial runs over native USB. `setup()` waits up to 3 s for a USB host, then starts anyway,
+> so the firmware also runs on battery.
 
 ---
 
@@ -234,10 +244,10 @@ PlatformIO's CLI is at `~/.platformio/penv/Scripts/pio.exe` if `pio` is not on y
 | 4/10 | I²C link: UNO Q master ↔ XIAO `0x08`        | both  | `APP_MODE_I2C_SLAVE` + `unoq_tests/i2c_master_test`  | XIAO flashed and running; UNO Q compiles, needs a test on the board |
 | 11   | Button + RGB LED                            | UNO Q | `unoq_tests/io_test`                                 | Compiles, needs a test on the board |
 | 12   | Button → I²C RING → XIAO chime              | both  | `unoq_tests/doorbell_ring` + `APP_MODE_I2C_SLAVE`    | Compiles, needs a test on the board |
-| 13–14| STM32 ↔ Linux Bridge RPC + Python poller    | UNO Q | the main **Dorbel** app (repo root)                           | Compiles, needs a test on the board |
-| –    | Wi-Fi audio (mic up, speaker down)          | XIAO  | —                                              | Planned |
-| –    | Flask dashboard + Telegram (from Trillo)    | UNO Q | —                                              | Planned |
-| –    | Integration + battery power                 | both  | —                                              | Planned |
+| 13–14| STM32 ↔ Linux Bridge RPC + Python poller    | UNO Q | the main **Dorbel** app (repo root)                           | Working |
+| 15   | Push-to-talk intercom over Wi-Fi            | XIAO  | `APP_MODE_DORBEL` (`intercom.cpp`)             | Builds, needs a test on the board |
+| 16–18| Dashboard + Telegram alerts                 | UNO Q | `python/` (main app)                           | Smoke-tested on a PC with a stub Bridge; needs a test on the board |
+| 19   | V1 end-to-end demo                          | both  | see "Dorbel V1" below                          | Needs a test on the board |
 
 ### Subsystem 1: MAX98357A speaker test
 
@@ -440,3 +450,76 @@ Software:  STM32 → Bridge RPC → Linux Python
 ```
 
 The Linux side is where the Flask dashboard and Telegram notifications from Trillo will connect.
+
+---
+
+## Dorbel V1: camera + push-to-talk + dashboard + Telegram
+
+```
+VIDEO   XIAO camera ──Wi-Fi── http://<xiao>:81/stream ──────────► browser
+LISTEN  XIAO mic    ──Wi-Fi── ws://<xiao>/audio (16 kHz PCM) ───► browser
+TALK    browser mic ──Wi-Fi── ws://<xiao>/audio ──► XIAO ──I2S──► MAX98357A
+RING    button ─► UNO Q ─I²C RING─► XIAO chime
+               └─► Bridge ─► python/main.py ─► Telegram + dashboard events
+```
+
+Video and audio go straight from the browser to the XIAO. The UNO Q serves the dashboard page
+and learns the XIAO's IP over I²C (`CMD_GET_IP`). The intercom is **half duplex**: while the
+homeowner holds TALK, the XIAO stops sending mic audio, so there is no feedback loop.
+
+### XIAO endpoints (`APP_MODE_DORBEL`)
+
+| URL                       | What                                                     |
+|---------------------------|----------------------------------------------------------|
+| `http://<xiao>/`          | bare camera page (the "live video" link in alerts)       |
+| `http://<xiao>:81/stream` | MJPEG stream, on its own server so it never blocks audio. One viewer at a time |
+| `http://<xiao>/capture`   | a single JPEG, used for the Telegram alert photo         |
+| `ws://<xiao>/audio`       | intercom: binary = 16 kHz 16-bit LE mono PCM both ways; text `talk:1` / `talk:0` |
+
+### Setup
+
+1. **XIAO:** `APP_MODE_DORBEL` is the default. Flash it (`cd xiao && pio run -t upload`). The
+   serial log ends with `WiFi up: camera http://<ip>/ ...`.
+2. **Telegram bot (optional):** create a bot with @BotFather. On the UNO Q, copy
+   `python/dorbel_config_example.py` to `python/dorbel_config.py` and set `TELEGRAM_BOT_TOKEN`.
+3. **UNO Q:** run the **Dorbel** app in App Lab. The Python console prints
+   `Dorbel dashboard: http://<unoq-ip>:8000/`.
+4. Open the dashboard on a phone or laptop on the same Wi-Fi. Within a few seconds,
+   SYSTEM shows `ONLINE` and the video appears.
+5. **Telegram users:** each homeowner sends `/start` to the bot, then you enable them on the
+   dashboard's **Telegram users** page. Alerts are limited to one every 10 s.
+
+### The microphone needs a "secure context"
+
+Browsers only allow `getUserMedia` (TALK) on `https://` or `localhost`. The dashboard is plain
+`http://<unoq-ip>:8000`. **Listening works anyway; TALK does not** until you whitelist the
+address on the homeowner's device:
+
+- **Chrome / Edge (desktop and Android):** open
+  `chrome://flags/#unsafely-treat-insecure-origin-as-secure`, add `http://<unoq-ip>:8000`,
+  set it to Enabled, and relaunch.
+- iOS Safari has no equivalent. Use an Android phone or a laptop for the demo.
+
+The dashboard shows a warning under the TALK button if the browser blocks the mic.
+
+### Demo checklist
+
+| Step | Action                         | Expected                                                    |
+|------|--------------------------------|-------------------------------------------------------------|
+| 1    | Open the dashboard             | SYSTEM ● ONLINE, live video, event `Camera at <ip>`         |
+| 2    | Press the doorbell button      | chime, LED red, DOORBELL ● PRESSED, VISITOR ● PRESENT, Telegram photo + alert |
+| 3    | Click **🔊 Listen to door**    | you hear the door mic in the browser                        |
+| 4    | Hold **TALK** (or space)       | your voice comes out of the door speaker; INTERCOM ● TALKING, event `Intercom started` |
+| 5    | Release                        | `Intercom ended`, door audio resumes                        |
+
+| Symptom                               | Likely cause                                               |
+|---------------------------------------|------------------------------------------------------------|
+| Video says "only one viewer"          | Another tab or device already has `:81/stream` open.       |
+| Dashboard unreachable from the phone  | App Lab didn't publish port 8000. Check `ports:` in `app.yaml`. |
+| Telegram link points to a 172.x address | App Lab runs Python in a container. Set `DASHBOARD_URL` in `dorbel_config.py`. |
+| Talk audio choppy                     | Weak Wi-Fi. The XIAO buffers 100 ms; check RSSI in the serial scan. |
+| Door audio too quiet or loud          | `MIC_GAIN` in `xiao/src/intercom.cpp` (default 8).          |
+| No camera IP on the dashboard         | Old UNO Q sketch without `get_xiao_ip`, or set `XIAO_HOST` in `dorbel_config.py`. |
+
+V1 has no door sensor, so DOOR shows `NO SENSOR` and the alert leaves out the door state.
+VISITOR is inferred: PRESENT for 2 minutes after a ring or a talk.

@@ -7,6 +7,9 @@
 #include "speaker_test.h"
 #include "mic_level.h"
 #include "i2c_slave_test.h"
+#include "i2c_link.h"
+#include "intercom.h"
+#include "dorbel_protocol.h"
 
 // ---------------------------------------------------------------------
 // Pick which subsystem test to run. Change this line and reflash to
@@ -19,12 +22,14 @@
 #define APP_MODE_SPEAKER_TEST  3
 #define APP_MODE_MIC_LEVEL     4
 #define APP_MODE_I2C_SLAVE     5
-#define APP_MODE APP_MODE_I2C_SLAVE
+#define APP_MODE_DORBEL        6 // V1 integration: camera + intercom + I2C link
+#define APP_MODE APP_MODE_DORBEL
 
 void startCameraServer();
+void startDorbelServers(bool micOk, bool speakerOk);
 void setupLedFlash(int pin);
 
-static void configureCamera() {
+static bool configureCamera() {
   camera_config_t config = {};
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -66,9 +71,7 @@ static void configureCamera() {
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
     Serial.printf("Camera init failed with error 0x%x\n", err);
-    while (true) {
-      delay(1000);
-    }
+    return false;
   }
 
   sensor_t *sensor = esp_camera_sensor_get();
@@ -87,13 +90,12 @@ static void configureCamera() {
 #if defined(LED_GPIO_NUM)
   setupLedFlash(LED_GPIO_NUM);
 #endif
+  return true;
 }
 
-static void setupCameraStreamMode() {
-  Serial.println("Mode: camera live stream");
-
-  configureCamera();
-
+// Scans, then connects. timeoutMs = 0 waits forever; otherwise gives up after
+// timeoutMs and leaves the ESP32 retrying in the background.
+static bool connectWiFi(uint32_t timeoutMs) {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
@@ -124,8 +126,13 @@ static void setupCameraStreamMode() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   WiFi.setSleep(false); // avoid WiFi power-save stutter while streaming
   Serial.print("Connecting to WiFi");
+  uint32_t start = millis();
   uint32_t attemptStart = millis();
   while (WiFi.status() != WL_CONNECTED) {
+    if (timeoutMs && millis() - start > timeoutMs) {
+      Serial.println("\nWiFi not connected yet - continuing, will keep retrying.");
+      return false;
+    }
     delay(500);
     Serial.print(".");
     if (millis() - attemptStart > 15000) {
@@ -135,6 +142,19 @@ static void setupCameraStreamMode() {
     }
   }
   Serial.println();
+  return true;
+}
+
+static void setupCameraStreamMode() {
+  Serial.println("Mode: camera live stream");
+
+  if (!configureCamera()) {
+    while (true) {
+      delay(1000);
+    }
+  }
+
+  connectWiFi(0);
 
   Serial.print("Connected! Open http://");
   Serial.print(WiFi.localIP());
@@ -143,10 +163,100 @@ static void setupCameraStreamMode() {
   startCameraServer();
 }
 
+// ---------------------------------------------------------------------
+// APP_MODE_DORBEL - everything at once:
+//   camera -> http://<ip>:81/stream   (and /capture on port 80)
+//   mic    -> ws://<ip>/audio         (and the browser's talk audio back)
+//   I2C    -> RING plays the chime; status + IP answered to the UNO Q
+// ---------------------------------------------------------------------
+static bool cameraOk = false;
+static bool micOk = false;
+static bool speakerOk = false;
+
+static uint8_t dorbelStatus() {
+  uint8_t flags = 0;
+  if (WiFi.status() == WL_CONNECTED) flags |= STATUS_ALIVE;
+  if (cameraOk) flags |= STATUS_CAMERA;
+  if (micOk && speakerOk) flags |= STATUS_AUDIO;
+  if (intercomTalking()) flags |= STATUS_TALK;
+  return flags;
+}
+
+static void setupDorbelMode() {
+  Serial.println("Mode: Dorbel V1 (camera + intercom + I2C link)");
+
+  cameraOk = configureCamera();
+  speakerOk = initSpeaker();
+  micOk = initMic();
+  Serial.printf("Camera %s, speaker %s, mic %s\n", cameraOk ? "OK" : "FAILED",
+                speakerOk ? "OK" : "FAILED", micOk ? "OK" : "FAILED");
+
+  // I2C first, so the doorbell chime works even while Wi-Fi is down.
+  i2cLinkSetStatus(dorbelStatus());
+  if (!i2cLinkBegin()) {
+    Serial.println("I2C SLAVE FAILED");
+  }
+
+  connectWiFi(20000);
+  startDorbelServers(micOk, speakerOk);
+}
+
+static void loopDorbelMode() {
+  static uint32_t lastStatus = 0;
+  static bool wasConnected = false;
+  static bool wasTalking = false;
+
+  uint8_t cmd;
+  while (i2cLinkNextCommand(&cmd)) {
+    switch (cmd) {
+    case CMD_RING:
+      Serial.println("RING COMMAND RECEIVED");
+      if (speakerOk) {
+        intercomRequestChime();
+      }
+      break;
+    case CMD_PING:
+    case CMD_GET_IP:
+      break; // polled constantly, not worth logging
+    default:
+      Serial.printf("I2C command 0x%02X\n", cmd);
+      break;
+    }
+  }
+
+  if (millis() - lastStatus >= 250) {
+    lastStatus = millis();
+    bool connected = WiFi.status() == WL_CONNECTED;
+    i2cLinkSetStatus(dorbelStatus());
+    i2cLinkSetIp(connected ? WiFi.localIP() : IPAddress(0, 0, 0, 0));
+
+    if (connected != wasConnected) {
+      wasConnected = connected;
+      if (connected) {
+        String ip = WiFi.localIP().toString();
+        Serial.printf("WiFi up: camera http://%s/  stream http://%s:81/stream  intercom ws://%s/audio\n",
+                      ip.c_str(), ip.c_str(), ip.c_str());
+      } else {
+        Serial.println("WiFi lost - reconnecting");
+      }
+    }
+
+    bool talking = intercomTalking();
+    if (talking != wasTalking) {
+      wasTalking = talking;
+      Serial.println(talking ? "TALK started (browser -> speaker)" : "TALK ended");
+    }
+  }
+
+  delay(10);
+}
+
 void setup() {
   Serial.begin(115200);
-  while (!Serial) {
-    delay(10); // wait for the native USB CDC host to attach
+  // Wait briefly for the native USB CDC host so early logs aren't lost, but
+  // don't hang forever when running on battery with no computer attached.
+  while (!Serial && millis() < 3000) {
+    delay(10);
   }
   Serial.println();
 
@@ -160,6 +270,8 @@ void setup() {
   setupMicLevel();
 #elif APP_MODE == APP_MODE_I2C_SLAVE
   setupI2cSlaveTest();
+#elif APP_MODE == APP_MODE_DORBEL
+  setupDorbelMode();
 #else
 #error "APP_MODE must be one of the APP_MODE_* values above"
 #endif
@@ -172,6 +284,8 @@ void loop() {
   loopMicLevel();
 #elif APP_MODE == APP_MODE_I2C_SLAVE
   loopI2cSlaveTest();
+#elif APP_MODE == APP_MODE_DORBEL
+  loopDorbelMode();
 #else
   // Everything happens in the HTTP server's own task (camera mode), or
   // setup() already finished its one-shot recording (mic mode).

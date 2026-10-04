@@ -2,6 +2,7 @@
 #include "esp_camera.h"
 #include "esp_http_server.h"
 #include "camera_pins.h"
+#include "intercom.h"
 
 #if defined(LED_GPIO_NUM)
 // Camera XCLK already uses LEDC_CHANNEL_0, so the flash LED needs its own
@@ -28,11 +29,45 @@ static const char INDEX_HTML[] =
     "img{max-width:100%;height:auto;display:block}"
     "</style></head><body><img src=\"/stream\"></body></html>";
 
+// APP_MODE_DORBEL page: video comes from the stream server on port 81,
+// because a stream occupies its server's only worker task for as long as
+// it runs.
+static const char DORBEL_INDEX_HTML[] =
+    "<!DOCTYPE html><html><head><title>Dorbel camera</title>"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+    "<style>"
+    "body{margin:0;background:#111;display:flex;justify-content:center;"
+    "align-items:center;height:100vh}"
+    "img{max-width:100%;height:auto;display:block}"
+    "</style></head><body><img id=\"v\">"
+    "<script>v.src='http://'+location.hostname+':81/stream'</script>"
+    "</body></html>";
+
 static httpd_handle_t stream_httpd = NULL;
+static httpd_handle_t control_httpd = NULL;
 
 static esp_err_t index_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
   return httpd_resp_send(req, INDEX_HTML, strlen(INDEX_HTML));
+}
+
+static esp_err_t dorbel_index_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "text/html");
+  return httpd_resp_send(req, DORBEL_INDEX_HTML, strlen(DORBEL_INDEX_HTML));
+}
+
+// One JPEG, used by the UNO Q for the Telegram alert photo.
+static esp_err_t capture_handler(httpd_req_t *req) {
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "image/jpeg");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  esp_err_t res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
+  esp_camera_fb_return(fb);
+  return res;
 }
 
 static esp_err_t stream_handler(httpd_req_t *req) {
@@ -97,5 +132,51 @@ void startCameraServer() {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
   } else {
     Serial.println("Failed to start camera HTTP server");
+  }
+}
+
+// APP_MODE_DORBEL: port 80 serves the page, /capture and the /audio
+// intercom WebSocket; port 81 serves /stream on its own worker task.
+void startDorbelServers(bool micOk, bool speakerOk) {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = 80;
+  config.ctrl_port = 32768;
+  config.max_uri_handlers = 6;
+  config.lru_purge_enable = true;
+  config.close_fn = intercomOnClose;
+
+  httpd_uri_t index_uri = {};
+  index_uri.uri = "/";
+  index_uri.method = HTTP_GET;
+  index_uri.handler = dorbel_index_handler;
+
+  httpd_uri_t capture_uri = {};
+  capture_uri.uri = "/capture";
+  capture_uri.method = HTTP_GET;
+  capture_uri.handler = capture_handler;
+
+  if (httpd_start(&control_httpd, &config) == ESP_OK) {
+    httpd_register_uri_handler(control_httpd, &index_uri);
+    httpd_register_uri_handler(control_httpd, &capture_uri);
+    intercomBegin(control_httpd, micOk, speakerOk);
+  } else {
+    Serial.println("Failed to start control HTTP server");
+  }
+
+  httpd_config_t stream_config = HTTPD_DEFAULT_CONFIG();
+  stream_config.server_port = 81;
+  stream_config.ctrl_port = 32769;
+  stream_config.max_uri_handlers = 2;
+  stream_config.lru_purge_enable = true;
+
+  httpd_uri_t stream_uri = {};
+  stream_uri.uri = "/stream";
+  stream_uri.method = HTTP_GET;
+  stream_uri.handler = stream_handler;
+
+  if (httpd_start(&stream_httpd, &stream_config) == ESP_OK) {
+    httpd_register_uri_handler(stream_httpd, &stream_uri);
+  } else {
+    Serial.println("Failed to start stream HTTP server");
   }
 }

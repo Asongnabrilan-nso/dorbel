@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dorbel users</title>
+<style>
+  body { margin:0; background:#101214; color:#e8eaed;
+         font:15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width:560px; margin:0 auto; padding:16px; }
+  h1 { font-size:18px; letter-spacing:.2em; text-align:center; }
+  p { color:#8a9099; } a { color:#8a9099; }
+  table { width:100%; border-collapse:collapse; }
+  td { padding:10px 6px; border-bottom:1px solid #2a2e34; }
+  button { font:inherit; color:#e8eaed; background:#262a30; border:1px solid #2a2e34;
+           border-radius:8px; padding:6px 12px; cursor:pointer; }
+  .on { background:#3ccf6e; border-color:#3ccf6e; color:#000; }
+</style>
+</head>
+<body>
+<main>
+  <h1>TELEGRAM USERS</h1>
+  <p id="intro">To get door alerts, open the Dorbel bot in Telegram and send <b>/start</b>,
+     then enable yourself here.</p>
+  <table><tbody id="users"></tbody></table>
+  <p><a href="/">← Dashboard</a></p>
+</main>
+<script>
+async function load() {
+  const data = await (await fetch("/api/users")).json();
+  if (!data.telegram) document.getElementById("intro").textContent =
+    "Telegram is off: set TELEGRAM_BOT_TOKEN in python/dorbel_config.py and restart the app.";
+  const esc = (s) => String(s).replace(/[<>&"]/g, "");
+  document.getElementById("users").innerHTML = data.users.length ? data.users.map(u => `
+    <tr><td>${esc(u.name)}</td>
+        <td><button class="${u.enabled ? "on" : ""}" onclick="act(${u.chat_id},'toggle')">
+          ${u.enabled ? "Alerts ON" : "Alerts OFF"}</button></td>
+        <td><button onclick="act(${u.chat_id},'delete')">Remove</button></td></tr>`).join("")
+    : "<tr><td>No one has sent /start yet.</td></tr>";
+}
+async function act(id, action) {
+  await fetch(`/api/users/${id}/${action}`, { method: "POST" });
+  load();
+}
+load();
+</script>
+</body>
+</html>

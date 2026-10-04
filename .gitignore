@@ -5,3 +5,8 @@
 xiao/.pio/
 xiao/.vscode/
 xiao/include/secrets.h
+
+# UNO Q Python app: local settings and Telegram user DB
+python/dorbel_config.py
+python/dorbel_users.db
+__pycache__/

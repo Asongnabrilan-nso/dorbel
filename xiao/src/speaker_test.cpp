@@ -99,3 +99,8 @@ void loopSpeakerTest() {
   playChime();
   delay(3000);
 }
+
+void speakerWrite(const int16_t *samples, size_t count) {
+  size_t written = 0;
+  i2s_write(SPEAKER_I2S_PORT, samples, count * sizeof(int16_t), &written, portMAX_DELAY);
+}

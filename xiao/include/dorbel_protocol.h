@@ -11,9 +11,10 @@
 #define CMD_RING     0x02
 #define CMD_TALK_ON  0x03
 #define CMD_TALK_OFF 0x04
+#define CMD_GET_IP   0x05 // the next read returns 4 bytes: the XIAO's IPv4 a.b.c.d (0.0.0.0 = no Wi-Fi)
 
 // XIAO -> UNO Q: one status byte per read, bit flags
-#define STATUS_ALIVE  0x01 // XIAO firmware running (Wi-Fi state once integrated)
+#define STATUS_ALIVE  0x01 // XIAO firmware running (in APP_MODE_DORBEL: Wi-Fi connected)
 #define STATUS_CAMERA 0x02
 #define STATUS_AUDIO  0x04
-#define STATUS_TALK   0x08
+#define STATUS_TALK   0x08 // homeowner is talking through the speaker

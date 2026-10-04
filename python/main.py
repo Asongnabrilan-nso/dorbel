@@ -1,12 +1,116 @@
-# Dorbel step 14 - Linux-side test of the MCU Bridge API.
+# Dorbel - UNO Q Linux side.
 #
-# Polls the STM32 every 0.5 s and prints the doorbell latch and XIAO status.
-# When a press is seen it is reported once and cleared with clear_event(),
-# so every press shows up as a separate RING event.
+# Polls the STM32 over the Bridge, keeps the doorbell state and event log,
+# serves the dashboard (dashboard.py) and sends Telegram alerts (notifier.py).
+#
+#   button -> STM32 -> Bridge -> here -> Telegram + dashboard events
+#
+# Video and intercom audio never pass through here: the dashboard page talks
+# to the XIAO directly (http://<xiao>:81/stream and ws://<xiao>/audio). This
+# side only learns the XIAO's IP, which the XIAO reports over I2C.
 
+import os
+import sys
+import threading
 import time
+from collections import deque
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from arduino.app_utils import App, Bridge
+
+import dashboard
+from notifier import TelegramNotifier
+
+try:
+    import dorbel_config as config
+except ImportError:
+    import dorbel_config_example as config
+
+STATUS_ALIVE = 0x01
+STATUS_CAMERA = 0x02
+STATUS_AUDIO = 0x04
+STATUS_TALK = 0x08
+
+PRESSED_SHOW_S = 10    # dashboard shows DOORBELL: PRESSED this long after a ring
+VISITOR_WINDOW_S = 120 # VISITOR: PRESENT this long after a ring or talk
+
+
+class DorbelState:
+    """Shared between the Bridge loop and the dashboard's HTTP threads."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.mcu_online = False
+        self.xiao_status = -1
+        self.xiao_ip = ""
+        self.talking = False
+        self.last_ring = 0.0
+        self.last_activity = 0.0
+        self.events = deque(maxlen=50)
+
+    def add_event(self, text):
+        with self.lock:
+            self.events.appendleft({"time": time.strftime("%H:%M:%S"), "text": text})
+        print(f"[event] {text}")
+
+    def snapshot(self):
+        now = time.time()
+        with self.lock:
+            xiao_online = self.xiao_status >= 0
+            return {
+                "mcu_online": self.mcu_online,
+                "xiao_online": xiao_online,
+                "xiao_wifi": xiao_online and bool(self.xiao_status & STATUS_ALIVE),
+                "camera": xiao_online and bool(self.xiao_status & STATUS_CAMERA),
+                "audio": xiao_online and bool(self.xiao_status & STATUS_AUDIO),
+                "talking": self.talking,
+                "xiao_ip": self.xiao_ip,
+                "doorbell_pressed": now - self.last_ring < PRESSED_SHOW_S,
+                "visitor_present": now - self.last_activity < VISITOR_WINDOW_S,
+                "door": None,  # V1 has no door sensor
+                "events": list(self.events),
+            }
+
+
+state = DorbelState()
+notifier = TelegramNotifier(config.TELEGRAM_BOT_TOKEN, state.add_event)
+dashboard.start(state, notifier, config.DASHBOARD_PORT)
+
+dashboard_url = config.DASHBOARD_URL or f"http://{dashboard.local_ip()}:{config.DASHBOARD_PORT}/"
+print(f"Dorbel dashboard: {dashboard_url}")
+state.add_event("System started")
+
+
+def ip_from_packed(packed):
+    if not packed:
+        return ""
+    packed &= 0xFFFFFFFF
+    return ".".join(str((packed >> shift) & 0xFF) for shift in (24, 16, 8, 0))
+
+
+def on_ring():
+    now = time.time()
+    with state.lock:
+        state.last_ring = now
+        state.last_activity = now
+        xiao_ip = state.xiao_ip
+    state.add_event("Doorbell pressed")
+
+    lines = [
+        "🔔 DORBEL ALERT",
+        "",
+        "Someone is at the door.",
+        "",
+        "Doorbell: PRESSED",
+        f"Time: {time.strftime('%H:%M')}",
+        "",
+        f"Dashboard: {dashboard_url}",
+    ]
+    if xiao_ip:
+        lines.append(f"Live video: http://{xiao_ip}/")
+    photo_url = f"http://{xiao_ip}/capture" if xiao_ip else None
+    notifier.alert("\n".join(lines), photo_url)
 
 
 def loop():
@@ -15,18 +119,47 @@ def loop():
         xiao = Bridge.call("get_xiao_status")
     except Exception as e:
         # The MCU registers its functions a moment after boot; retry quietly.
+        if state.mcu_online:
+            state.add_event("MCU not answering")
+        state.mcu_online = False
         print(f"bridge not ready: {e}")
         time.sleep(1)
         return
 
-    xiao_text = "offline" if xiao < 0 else f"0x{xiao:02X}"
-    print(f"doorbell={doorbell} xiao={xiao_text}")
+    try:
+        xiao_ip = config.XIAO_HOST or ip_from_packed(Bridge.call("get_xiao_ip"))
+    except Exception:
+        xiao_ip = config.XIAO_HOST  # older sketch without get_xiao_ip
+
+    talking = xiao >= 0 and bool(xiao & STATUS_TALK)
+
+    with state.lock:
+        was_mcu = state.mcu_online
+        was_online = state.xiao_status >= 0
+        was_talking = state.talking
+        old_ip = state.xiao_ip
+        state.mcu_online = True
+        state.xiao_status = xiao
+        state.talking = talking
+        if xiao_ip:
+            state.xiao_ip = xiao_ip
+        if talking:
+            state.last_activity = time.time()
+
+    if not was_mcu:
+        state.add_event("MCU connected")
+    if (xiao >= 0) != was_online:
+        state.add_event("XIAO online" if xiao >= 0 else "XIAO offline")
+    if xiao_ip and xiao_ip != old_ip:
+        state.add_event(f"Camera at {xiao_ip}")
+    if talking != was_talking:
+        state.add_event("Intercom started" if talking else "Intercom ended")
 
     if doorbell == 1:
-        print("RING event received from MCU")
         Bridge.call("clear_event")
+        on_ring()
 
-    time.sleep(0.5)
+    time.sleep(0.25)
 
 
 App.run(user_loop=loop)
