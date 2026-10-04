@@ -6,6 +6,7 @@
 #include "mic_capture.h"
 #include "speaker_test.h"
 #include "mic_level.h"
+#include "i2c_slave_test.h"
 
 // ---------------------------------------------------------------------
 // Pick which subsystem test to run. Change this line and reflash to
@@ -17,7 +18,8 @@
 #define APP_MODE_MIC_CAPTURE   2
 #define APP_MODE_SPEAKER_TEST  3
 #define APP_MODE_MIC_LEVEL     4
-#define APP_MODE APP_MODE_MIC_LEVEL
+#define APP_MODE_I2C_SLAVE     5
+#define APP_MODE APP_MODE_I2C_SLAVE
 
 void startCameraServer();
 void setupLedFlash(int pin);
@@ -156,6 +158,8 @@ void setup() {
   setupSpeakerTest();
 #elif APP_MODE == APP_MODE_MIC_LEVEL
   setupMicLevel();
+#elif APP_MODE == APP_MODE_I2C_SLAVE
+  setupI2cSlaveTest();
 #else
 #error "APP_MODE must be one of the APP_MODE_* values above"
 #endif
@@ -166,6 +170,8 @@ void loop() {
   loopSpeakerTest();
 #elif APP_MODE == APP_MODE_MIC_LEVEL
   loopMicLevel();
+#elif APP_MODE == APP_MODE_I2C_SLAVE
+  loopI2cSlaveTest();
 #else
   // Everything happens in the HTTP server's own task (camera mode), or
   // setup() already finished its one-shot recording (mic mode).

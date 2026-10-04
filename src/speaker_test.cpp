@@ -20,7 +20,7 @@ static const int16_t AMPLITUDE = 5000; // ~15% of full scale - loud enough, no c
 // does not ship the core 3.x ESP_I2S.h / I2SClass API, so the speaker is driven
 // through the ESP-IDF legacy I2S driver instead. Behaviour is identical:
 // standard (Philips) I2S, 16-bit, mono.
-static bool initSpeaker() {
+bool initSpeaker() {
   i2s_config_t config = {};
   config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
   config.sample_rate = SAMPLE_RATE;
@@ -88,10 +88,14 @@ void setupSpeakerTest() {
   Serial.println("MAX98357A OK");
 }
 
-void loopSpeakerTest() {
-  Serial.println("Playing doorbell test...");
+void playChime() {
   playTone(880, 300); // A5 - "ding"
   delay(100);
   playTone(659, 500); // E5 - "dong"
+}
+
+void loopSpeakerTest() {
+  Serial.println("Playing doorbell test...");
+  playChime();
   delay(3000);
 }

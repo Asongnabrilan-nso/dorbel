@@ -1,0 +1,5 @@
+name: Dorbel Doorbell Ring
+description: Step 12 - button press sends RING over I2C to the XIAO, which plays the chime.
+ports: []
+bricks: []
+icon: 🔔

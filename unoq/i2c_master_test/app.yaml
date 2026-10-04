@@ -1,0 +1,5 @@
+name: Dorbel I2C Master Test
+description: Step 10 - UNO Q pings the XIAO at 0x08 over I2C (A4/A5) and reads its status.
+ports: []
+bricks: []
+icon: 🔔

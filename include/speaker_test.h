@@ -6,5 +6,11 @@
 void setupSpeakerTest();
 void loopSpeakerTest();
 
+// Installs the I2S driver on port 1 for the MAX98357A. Returns false on failure.
+bool initSpeaker();
+
 // Plays a sine tone of the given frequency (Hz) for durationMs (blocking).
 void playTone(float frequency, int durationMs);
+
+// The doorbell "ding-dong" (~0.9 s, blocking).
+void playChime();
