@@ -698,8 +698,20 @@ the browser only has to reach the UNO Q, never the XIAO directly.
 
 Plain `http://<unoq-ip>:8000/` still works for video and listening. Only TALK needs HTTPS.
 
-**Check:** open `https://<unoq-ip>:8443/`. SYSTEM shows `● ONLINE`, video plays, and holding
-**HOLD TO TALK** asks for mic permission (allow it) with no warning under the button.
+**Using TALK:**
+
+- **Hold** the button while you speak, or **tap** it once to start and tap again to stop. The
+  space bar works the same way on a laptop.
+- The first press asks for microphone permission. Allow it, then press again.
+- The **green bar** under the button shows your microphone level. If it stays empty while you
+  speak, the browser is getting no sound from your microphone, and the hint under the button
+  says so.
+- **🔔 Test door speaker** plays two beeps at the door without using your microphone. Use it
+  to tell a speaker problem from a microphone problem.
+
+**Check:** open `https://<unoq-ip>:8443/`. SYSTEM shows `● ONLINE` and video plays.
+**🔔 Test door speaker** gives two beeps at the door. Holding **HOLD TO TALK** while you speak
+moves the green bar, and your voice comes out of the door speaker (INTERCOM `● TALKING`).
 
 You're ready to demo.
 
@@ -734,7 +746,7 @@ You're ready to demo.
 | 3 | "A visitor arrives…" | **Press the doorbell** | Chime from the door speaker, LED red, DOORBELL ● PRESSED, VISITOR ● PRESENT |
 | 4 | "…and the homeowner gets a photo, wherever they are." | Hold up / mirror the phone | Telegram photo + `🔔 DORBEL ALERT` |
 | 5 | "I can hear who's there…" | Click **🔊 Listen to door**. Have a helper speak at the door | Door audio through the laptop |
-| 6 | "…and answer them." | **Hold TALK** (or space bar) and speak | Voice from the door speaker. INTERCOM ● TALKING, event `Intercom started` |
+| 6 | "…and answer them." | **Hold TALK** (or tap to latch it on) and speak | Voice from the door speaker, green level bar moving. INTERCOM ● TALKING, event `Intercom started` |
 | 7 | "Only people I approve get alerts." | Open **Telegram users**, show the toggle | Access control without accounts or passwords |
 | 8 | "Video and audio stay on the local network. Only the alert leaves the house." | Back to the dashboard | Event log of the whole demo |
 
@@ -772,6 +784,9 @@ Keep the laptop away from the door speaker to avoid echo when Listen is on.
 | Event `No enabled Telegram users to alert` | Enable the user on the `/users` page. |
 | Alert arrives without a photo         | The UNO Q can't reach the XIAO (different network, see Step 2), or the XIAO still runs firmware from before `CAPTURE_FRAMESIZE`. |
 | Photo is glitchy or has grey stripes  | Lower `CAPTURE_FRAMESIZE` in `xiao/src/app_httpd.cpp` to `FRAMESIZE_SXGA` or `FRAMESIZE_XGA` and reflash. |
+| TALK shows `Intercom started` / `ended` but nothing is heard at the door | Press **🔔 Test door speaker**. No beeps → speaker side: MAX98357A wiring/power, SPK+/SPK-, `Speaker OK` in the XIAO serial log. Beeps but no voice → your microphone: watch the green bar; if it stays empty, unmute it or pick the right one in the browser's site settings. |
+| `Intercom ended` about 1 s after starting | The XIAO got no audio for 1 s (`TALK_TIMEOUT_MS`), so the browser isn't sending microphone audio. See the row above. |
+| Voice too quiet at the door           | Raise `TALK_GAIN` in `python/dashboard.html` (default 2), or the MAX98357A gain pin. |
 | Talk audio choppy                     | Weak Wi-Fi. The XIAO buffers 100 ms; check RSSI in the serial scan. |
 | Door audio too quiet or loud          | `MIC_GAIN` in `xiao/src/intercom.cpp` (default 8).          |
 | No camera IP on the dashboard         | Old UNO Q sketch without `get_xiao_ip`, or set `XIAO_HOST` in `dorbel_config.py`. |

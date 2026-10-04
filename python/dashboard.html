@@ -32,7 +32,9 @@
            user-select:none; -webkit-user-select:none; }
   #talk { width:100%; padding:22px; font-size:20px; letter-spacing:.2em; font-weight:700; }
   #talk.on { background:var(--red); border-color:var(--red); }
-  #listen.on { background:var(--blue); border-color:var(--blue); }
+  #listen.on, #testSpk.on { background:var(--blue); border-color:var(--blue); }
+  .meter { height:6px; margin-top:10px; background:#262a30; border-radius:3px; overflow:hidden; }
+  .meter i { display:block; height:100%; width:0; background:var(--green); transition:width .08s; }
   .hint { color:var(--dim); font-size:13px; margin-top:10px; }
   .hint.warn { color:var(--amber); } .hint a { color:var(--blue); }
   .events { padding:10px 16px; }
@@ -62,8 +64,13 @@
 
   <section class="talk">
     <button id="talk">HOLD TO TALK</button>
-    <div style="margin-top:10px"><button id="listen">🔊 Listen to door</button></div>
-    <div class="hint" id="talkHint">Hold the button (or the space bar) while you speak.</div>
+    <div class="meter" title="Your microphone level"><i id="level"></i></div>
+    <div style="margin-top:10px">
+      <button id="listen">🔊 Listen to door</button>
+      <button id="testSpk">🔔 Test door speaker</button>
+    </div>
+    <div class="hint" id="talkHint">Hold the button while you speak, or tap once to start and
+      again to stop. The space bar works too.</div>
   </section>
 
   <section class="events">
@@ -78,6 +85,8 @@
 const $ = (id) => document.getElementById(id);
 let httpsPort = 8443;
 const RATE = 16000; // XIAO audio: 16 kHz, 16-bit LE mono PCM both ways
+const TALK_GAIN = 2; // speech from getUserMedia is quiet next to the chime
+const TAP_MS = 400;  // a press shorter than this latches TALK on until the next tap
 let xiaoIp = "";
 
 // ---------------------------------------------------------------- status
@@ -125,6 +134,7 @@ refresh();
 // -------------------------------------------------------------- intercom
 let ctx = null, ws = null, playAt = 0, talking = false;
 let mic = null, rsPos = 0;
+let held = false, latched = false, pressAt = 0, talkSince = 0, loudest = 0;
 
 function audioCtx() {
   if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -163,11 +173,11 @@ function downsample(input, inRate) {
     const a = Math.floor(rsPos), z = Math.min(input.length, Math.floor(rsPos + ratio));
     let sum = 0;
     for (let i = a; i < z; i++) sum += input[i];
-    const v = Math.max(-1, Math.min(1, (sum / Math.max(1, z - a)) * 0.9));
+    const v = Math.max(-1, Math.min(1, (sum / Math.max(1, z - a)) * TALK_GAIN));
     out[n++] = v * 32767;
   }
   rsPos -= input.length;
-  return out.subarray(0, n);
+  return out.slice(0, n); // a copy, so .buffer holds exactly n samples
 }
 
 async function startMic() {
@@ -189,7 +199,16 @@ async function startMic() {
     const mute = c.createGain(); mute.gain.value = 0; // processor must reach the output to run
     proc.onaudioprocess = (e) => {
       if (!talking || !ws || ws.readyState !== 1) return;
-      ws.send(downsample(e.inputBuffer.getChannelData(0), c.sampleRate).buffer);
+      const input = e.inputBuffer.getChannelData(0);
+      let peak = 0;
+      for (let i = 0; i < input.length; i++) peak = Math.max(peak, Math.abs(input[i]));
+      loudest = Math.max(loudest, peak);
+      $("level").style.width = Math.min(100, peak * TALK_GAIN * 100) + "%";
+      if (Date.now() - talkSince > 2000 && loudest < 0.002) {
+        hint("Your microphone is sending silence. Check it isn't muted and that the browser " +
+             "is using the right microphone (site settings → Microphone).", true);
+      }
+      ws.send(downsample(input, c.sampleRate).buffer);
     };
     source.connect(proc); proc.connect(mute); mute.connect(c.destination);
     mic = { stream, proc };
@@ -207,27 +226,85 @@ async function talkStart() {
   audioCtx();
   const sock = connect();
   if (!sock || !(await startMic())) return;
-  talking = true; rsPos = 0;
-  $("talk").classList.add("on"); $("talk").textContent = "TALKING…";
+  if (!held && !latched) {
+    // Released while the browser's permission prompt was open.
+    hint("Microphone ready. Hold the button (or tap it) to talk.", false);
+    return;
+  }
+  talking = true; rsPos = 0; talkSince = Date.now(); loudest = 0;
+  hint("Speaking to the door…", false);
+  $("talk").classList.add("on");
+  $("talk").textContent = latched ? "TALKING… TAP TO STOP" : "TALKING…";
   const go = () => { if (talking) sock.send("talk:1"); };
   sock.readyState === 1 ? go() : sock.addEventListener("open", go, { once: true });
   $("listen").classList.add("on");
 }
 
 function talkStop() {
+  latched = false;
   if (!talking) return;
   talking = false;
+  $("level").style.width = "0";
   $("talk").classList.remove("on"); $("talk").textContent = "HOLD TO TALK";
+  if (loudest >= 0.002) hint("Hold the button while you speak, or tap once to start and again to stop.", false);
   if (ws && ws.readyState === 1) ws.send("talk:0");
   playAt = 0;
 }
 
+// Hold = talk while held. A quick tap latches TALK on until the next tap.
+function press() {
+  if (latched && talking) { talkStop(); return; }
+  latched = false; // e.g. a tap whose talk never started (mic blocked)
+  held = true; pressAt = Date.now();
+  talkStart();
+}
+function release() {
+  if (!held) return;
+  held = false;
+  if (Date.now() - pressAt < TAP_MS) {
+    latched = true;
+    if (talking) $("talk").textContent = "TALKING… TAP TO STOP";
+  } else {
+    talkStop();
+  }
+}
+
 const t = $("talk");
-t.addEventListener("pointerdown", (e) => { e.preventDefault(); t.setPointerCapture(e.pointerId); talkStart(); });
-["pointerup", "pointercancel", "lostpointercapture"].forEach(ev => t.addEventListener(ev, talkStop));
+t.addEventListener("pointerdown", (e) => { e.preventDefault(); t.setPointerCapture(e.pointerId); press(); });
+["pointerup", "pointercancel", "lostpointercapture"].forEach(ev => t.addEventListener(ev, release));
 t.addEventListener("contextmenu", (e) => e.preventDefault());
-document.addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat) { e.preventDefault(); talkStart(); } });
-document.addEventListener("keyup", (e) => { if (e.code === "Space") talkStop(); });
+document.addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat) { e.preventDefault(); press(); } });
+document.addEventListener("keyup", (e) => { if (e.code === "Space") release(); });
+
+// Plays two beeps on the door speaker, with no microphone involved.
+$("testSpk").onclick = () => {
+  if (talking || $("testSpk").classList.contains("on")) return;
+  const sock = connect();
+  if (!sock) return;
+  const run = () => {
+    const chunk = RATE / 10; // 100 ms per frame; the XIAO buffers only 0.5 s
+    const pcm = new Int16Array(RATE);
+    for (let i = 0; i < pcm.length; i++)
+      pcm[i] = 8000 * Math.sin(2 * Math.PI * (i < RATE / 2 ? 660 : 880) * i / RATE);
+    $("testSpk").classList.add("on");
+    hint("Playing two beeps on the door speaker…", false);
+    sock.send("talk:1");
+    let pos = 0;
+    const timer = setInterval(() => {
+      if (pos >= pcm.length || sock.readyState !== 1) {
+        clearInterval(timer);
+        if (sock.readyState === 1) sock.send("talk:0");
+        $("testSpk").classList.remove("on");
+        hint("Heard two beeps at the door? Then the speaker works, and TALK only needs your " +
+             "microphone (watch the green bar while you talk).", false);
+        return;
+      }
+      sock.send(pcm.slice(pos, pos + chunk).buffer);
+      pos += chunk;
+    }, 100);
+  };
+  sock.readyState === 1 ? run() : sock.addEventListener("open", run, { once: true });
+};
 
 $("listen").onclick = () => {
   if (ws && ws.readyState <= 1) { ws.close(); ws = null; $("listen").classList.remove("on"); return; }
