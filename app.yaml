@@ -2,5 +2,6 @@ name: Dorbel
 description: "UNO Q side of Dorbel - doorbell button, RGB LED, I2C link to the XIAO, dashboard and Telegram alerts."
 ports:
 - 8000
+- 8443
 bricks: []
 icon: 🔔

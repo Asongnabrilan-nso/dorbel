@@ -5,11 +5,12 @@
 #
 #   button -> STM32 -> Bridge -> here -> Telegram + dashboard events
 #
-# Video and intercom audio never pass through here: the dashboard page talks
-# to the XIAO directly (http://<xiao>:81/stream and ws://<xiao>/audio). This
-# side only learns the XIAO's IP, which the XIAO reports over I2C.
+# The dashboard relays the XIAO's video and intercom audio (see dashboard.py),
+# so browsers only need to reach this board. The XIAO reports its own IP over
+# I2C, and it must be on the same network as this board.
 
 import os
+import socket
 import sys
 import threading
 import time
@@ -75,11 +76,27 @@ class DorbelState:
 
 state = DorbelState()
 notifier = TelegramNotifier(config.TELEGRAM_BOT_TOKEN, state.add_event)
-dashboard.start(state, notifier, config.DASHBOARD_PORT)
+https_port = getattr(config, "DASHBOARD_HTTPS_PORT", 8443)
+https_up = dashboard.start(state, notifier, config.DASHBOARD_PORT, https_port)
 
-dashboard_url = config.DASHBOARD_URL or f"http://{dashboard.local_ip()}:{config.DASHBOARD_PORT}/"
+if config.DASHBOARD_URL:
+    dashboard_url = config.DASHBOARD_URL
+elif https_up:
+    dashboard_url = f"https://{dashboard.local_ip()}:{https_port}/"
+else:
+    dashboard_url = f"http://{dashboard.local_ip()}:{config.DASHBOARD_PORT}/"
 print(f"Dorbel dashboard: {dashboard_url}")
 state.add_event("System started")
+
+
+def check_xiao_reachable(ip):
+    """Logs a clear event when the XIAO reports an IP this board can't reach."""
+    try:
+        socket.create_connection((ip, 80), timeout=3).close()
+        state.add_event(f"Camera reachable at {ip}")
+    except OSError:
+        state.add_event(f"Camera at {ip} is NOT reachable - put the XIAO on "
+                        f"the same Wi-Fi network as this board")
 
 
 def ip_from_packed(packed):
@@ -105,10 +122,8 @@ def on_ring():
         "Doorbell: PRESSED",
         f"Time: {time.strftime('%H:%M')}",
         "",
-        f"Dashboard: {dashboard_url}",
+        f"Live video & talk: {dashboard_url}",
     ]
-    if xiao_ip:
-        lines.append(f"Live video: http://{xiao_ip}/")
     photo_url = f"http://{xiao_ip}/capture" if xiao_ip else None
     notifier.alert("\n".join(lines), photo_url)
 
@@ -152,6 +167,7 @@ def loop():
         state.add_event("XIAO online" if xiao >= 0 else "XIAO offline")
     if xiao_ip and xiao_ip != old_ip:
         state.add_event(f"Camera at {xiao_ip}")
+        threading.Thread(target=check_xiao_reachable, args=(xiao_ip,), daemon=True).start()
     if talking != was_talking:
         state.add_event("Intercom started" if talking else "Intercom ended")
 

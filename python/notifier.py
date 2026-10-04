@@ -160,19 +160,26 @@ class TelegramNotifier:
         self._last_alert = now
         threading.Thread(target=self._send_alert, args=(text, photo_url), daemon=True).start()
 
+    def _snapshot(self, url, attempts=3):
+        for attempt in range(attempts):
+            try:
+                with urllib.request.urlopen(url, timeout=5) as resp:
+                    return resp.read()
+            except Exception as e:
+                print(f"Snapshot attempt {attempt + 1} failed ({url}): {e}")
+                time.sleep(0.5)
+        self.log_event("Snapshot failed: camera not reachable")
+        return None
+
     def _send_alert(self, text, photo_url):
         chat_ids = self.users.enabled_chat_ids()
         if not chat_ids:
             self.log_event("No enabled Telegram users to alert")
             return
 
-        photo = None
-        if photo_url:
-            try:
-                with urllib.request.urlopen(photo_url, timeout=3) as resp:
-                    photo = resp.read()
-            except Exception as e:
-                print(f"Snapshot failed ({photo_url}): {e}")
+        photo = self._snapshot(photo_url) if photo_url else None
+        if not photo:
+            text += "\n\n📷 No photo: camera not reachable."
 
         sent = 0
         for chat_id in chat_ids:

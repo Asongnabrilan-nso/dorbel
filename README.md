@@ -488,7 +488,7 @@ homeowner holds TALK, the XIAO stops sending mic audio, so there is no feedback 
 |---------------------------|----------------------------------------------------------|
 | `http://<xiao>/`          | bare camera page (the "live video" link in alerts)       |
 | `http://<xiao>:81/stream` | MJPEG stream, on its own server so it never blocks audio. One viewer at a time |
-| `http://<xiao>/capture`   | a single JPEG, used for the Telegram alert photo         |
+| `http://<xiao>/capture`   | one 1600×1200 JPEG (`CAPTURE_FRAMESIZE`), used for the Telegram alert photo |
 | `ws://<xiao>/audio`       | intercom: binary = 16 kHz 16-bit LE mono PCM both ways; text `talk:1` / `talk:0` |
 
 ### Bill of materials
@@ -639,15 +639,18 @@ limited to one every 10 s.
 
 #### Step 5: Prepare the browser for push-to-talk
 
-Browsers only allow the microphone (`getUserMedia`) on `https://` or `localhost`. The
-dashboard is plain `http://`, so on the demo laptop / Android phone:
+Browsers only allow the microphone (`getUserMedia`) on `https://` or `localhost`, so the
+dashboard is also served over HTTPS on port **8443** with a self-signed certificate (created
+in `python/certs/` on first start). The video and audio are relayed through the UNO Q, so
+the browser only has to reach the UNO Q, never the XIAO directly.
 
-1. Open `chrome://flags/#unsafely-treat-insecure-origin-as-secure` (Edge: `edge://flags/...`).
-2. Add `http://<unoq-ip>:8000`, set it to **Enabled**, then click **Relaunch**.
+1. Open `https://<unoq-ip>:8443/` (the Telegram alert links here).
+2. The browser warns about the certificate the first time. Choose **Advanced → Proceed**.
+   Each browser needs this only once.
 
-Listening works without this. Only TALK needs it. iOS Safari has no equivalent.
+Plain `http://<unoq-ip>:8000/` still works for video and listening. Only TALK needs HTTPS.
 
-**Check:** open `http://<unoq-ip>:8000/`. SYSTEM shows `● ONLINE`, video plays, and holding
+**Check:** open `https://<unoq-ip>:8443/`. SYSTEM shows `● ONLINE`, video plays, and holding
 **HOLD TO TALK** asks for mic permission (allow it) with no warning under the button.
 
 You're ready to demo.
@@ -714,7 +717,7 @@ Keep the laptop away from the door speaker to avoid echo when Listen is on.
 | `Telegram polling error: <urlopen error ...>` | The UNO Q has no internet or DNS. Test with `curl https://api.telegram.org`. |
 | `/start` gets no reply                | App not running, or token error (see above). |
 | Event `No enabled Telegram users to alert` | Enable the user on the `/users` page. |
-| Alert arrives without a photo         | The XIAO `/capture` took > 3 s or the IP is unknown. Check `Camera at <ip>` in the log. |
+| Alert arrives without a photo         | The UNO Q can't reach the XIAO (different network?) or the IP is unknown. The log says `Camera at <ip> is NOT reachable` in that case. |
 | Talk audio choppy                     | Weak Wi-Fi. The XIAO buffers 100 ms; check RSSI in the serial scan. |
 | Door audio too quiet or loud          | `MIC_GAIN` in `xiao/src/intercom.cpp` (default 8).          |
 | No camera IP on the dashboard         | Old UNO Q sketch without `get_xiao_ip`, or set `XIAO_HOST` in `dorbel_config.py`. |

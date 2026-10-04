@@ -56,10 +56,36 @@ static esp_err_t dorbel_index_handler(httpd_req_t *req) {
   return httpd_resp_send(req, DORBEL_INDEX_HTML, strlen(DORBEL_INDEX_HTML));
 }
 
-// One JPEG, used by the UNO Q for the Telegram alert photo.
+// Resolution of the /capture photo. The live stream stays small for frame
+// rate; the photo is for recognising the visitor. UXGA (1600x1200) is the
+// largest the frame buffers were allocated for in configureCamera().
+#define CAPTURE_FRAMESIZE FRAMESIZE_UXGA
+
+// One JPEG, used by the UNO Q for the Telegram alert photo. Switches the
+// sensor to CAPTURE_FRAMESIZE for this one shot, then back to the stream size.
 static esp_err_t capture_handler(httpd_req_t *req) {
-  camera_fb_t *fb = esp_camera_fb_get();
+  sensor_t *sensor = esp_camera_sensor_get();
+  framesize_t streamSize = sensor->status.framesize;
+  sensor->set_framesize(sensor, CAPTURE_FRAMESIZE);
+
+  // Frames already queued are still the old size, and the first frame after
+  // the switch can be badly exposed - skip those and keep the second big one.
+  camera_fb_t *fb = NULL;
+  int bigFrames = 0;
+  for (int i = 0; i < 8; i++) {
+    fb = esp_camera_fb_get();
+    if (!fb) {
+      break;
+    }
+    if (fb->width == resolution[CAPTURE_FRAMESIZE].width && ++bigFrames >= 2) {
+      break;
+    }
+    esp_camera_fb_return(fb);
+    fb = NULL;
+  }
+
   if (!fb) {
+    sensor->set_framesize(sensor, streamSize);
     httpd_resp_send_500(req);
     return ESP_FAIL;
   }
@@ -67,6 +93,7 @@ static esp_err_t capture_handler(httpd_req_t *req) {
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   esp_err_t res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
   esp_camera_fb_return(fb);
+  sensor->set_framesize(sensor, streamSize);
   return res;
 }
 

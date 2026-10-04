@@ -34,7 +34,7 @@
   #talk.on { background:var(--red); border-color:var(--red); }
   #listen.on { background:var(--blue); border-color:var(--blue); }
   .hint { color:var(--dim); font-size:13px; margin-top:10px; }
-  .hint.warn { color:var(--amber); }
+  .hint.warn { color:var(--amber); } .hint a { color:var(--blue); }
   .events { padding:10px 16px; }
   .events h2 { font-size:13px; letter-spacing:.08em; color:var(--dim); margin:0 0 6px; }
   .events ol { list-style:none; margin:0; padding:0; max-height:240px; overflow:auto; }
@@ -76,6 +76,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+let httpsPort = 8443;
 const RATE = 16000; // XIAO audio: 16 kHz, 16-bit LE mono PCM both ways
 let xiaoIp = "";
 
@@ -87,6 +88,7 @@ async function refresh() {
   try { s = await (await fetch("/api/state")).json(); }
   catch { setVal($("sSystem"), "DASHBOARD OFFLINE", "bad"); return; }
 
+  httpsPort = s.https_port || httpsPort;
   if (!s.mcu_online)       setVal($("sSystem"), "MCU OFFLINE", "bad");
   else if (!s.xiao_online) setVal($("sSystem"), "XIAO OFFLINE", "bad");
   else if (!s.xiao_wifi)   setVal($("sSystem"), "XIAO NO WI-FI", "warn");
@@ -99,9 +101,11 @@ async function refresh() {
   setVal($("sTalk"), s.talking ? "TALKING" : (ws && ws.readyState === 1 ? "LISTENING" : "IDLE"),
          s.talking ? "live" : "idle");
 
+  // Video and audio are relayed by this dashboard (/stream, /audio), so the
+  // browser never needs to reach the XIAO itself.
   if (s.xiao_ip !== xiaoIp && s.xiao_wifi) {
     xiaoIp = s.xiao_ip;
-    $("video").src = `http://${xiaoIp}:81/stream`;
+    $("video").src = `/stream?t=${Date.now()}`;
   }
   if (!s.xiao_wifi || !xiaoIp) $("videoMsg").textContent = "Waiting for the XIAO camera…";
 
@@ -111,8 +115,9 @@ async function refresh() {
 $("video").onload = () => $("videoMsg").style.display = "none";
 $("video").onerror = () => {
   $("videoMsg").style.display = "flex";
-  $("videoMsg").textContent = "Camera stream unavailable (only one viewer at a time).";
-  setTimeout(() => { if (xiaoIp) $("video").src = `http://${xiaoIp}:81/stream?t=${Date.now()}`; }, 3000);
+  $("videoMsg").textContent = `Camera at ${xiaoIp || "?"} not reachable. Is the XIAO on the ` +
+    "same Wi-Fi as the UNO Q? (Only one viewer at a time.)";
+  setTimeout(() => { if (xiaoIp) $("video").src = `/stream?t=${Date.now()}`; }, 3000);
 };
 setInterval(refresh, 1000);
 refresh();
@@ -130,7 +135,7 @@ function audioCtx() {
 function connect() {
   if (ws && ws.readyState <= 1) return ws;
   if (!xiaoIp) { hint("The XIAO's address isn't known yet.", true); return null; }
-  ws = new WebSocket(`ws://${xiaoIp}/audio`);
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/audio`);
   ws.binaryType = "arraybuffer";
   ws.onmessage = (e) => { if (typeof e.data !== "string" && !talking) play(e.data); };
   ws.onclose = () => { $("listen").classList.remove("on"); };
@@ -168,8 +173,11 @@ function downsample(input, inRate) {
 async function startMic() {
   if (mic) return true;
   if (!window.isSecureContext || !navigator.mediaDevices) {
-    hint("This browser blocks the microphone on plain http://. See README: allow this " +
-         "address in chrome://flags/#unsafely-treat-insecure-origin-as-secure.", true);
+    // Browsers only allow the microphone on https://. Send the user there.
+    const secure = `https://${location.hostname}:${httpsPort}/`;
+    $("talkHint").innerHTML = `The microphone needs the secure dashboard: <a href="${secure}">` +
+      `${secure}</a> (accept the certificate warning once).`;
+    $("talkHint").className = "hint warn";
     return false;
   }
   try {

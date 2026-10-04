@@ -14,3 +14,6 @@ __pycache__/
 # Stray PlatformIO output if the repo root is opened instead of xiao/
 /.pio/
 /include/secrets.h
+
+# Self-signed HTTPS certificate made by the dashboard on first start
+python/certs/
