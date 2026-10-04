@@ -17,6 +17,7 @@ import uuid
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dorbel_users.db")
 ALERT_INTERVAL_S = 10  # at most one alert per 10 s, like Trillo
 MAX_USERS = 10
+SEND_ATTEMPTS = 3
 
 
 class UserDB:
@@ -183,12 +184,16 @@ class TelegramNotifier:
 
         sent = 0
         for chat_id in chat_ids:
-            try:
-                if photo:
-                    self._send_photo(chat_id, photo, text)
-                else:
-                    self._api("sendMessage", {"chat_id": chat_id, "text": text})
-                sent += 1
-            except Exception as e:
-                print(f"Telegram send to {chat_id} failed: {e}")
+            # Retry, so a short internet/DNS drop doesn't lose the alert.
+            for attempt in range(SEND_ATTEMPTS):
+                try:
+                    if photo:
+                        self._send_photo(chat_id, photo, text)
+                    else:
+                        self._api("sendMessage", {"chat_id": chat_id, "text": text})
+                    sent += 1
+                    break
+                except Exception as e:
+                    print(f"Telegram send to {chat_id} failed (attempt {attempt + 1}): {e}")
+                    time.sleep(3)
         self.log_event(f"Telegram alert sent to {sent}/{len(chat_ids)}")

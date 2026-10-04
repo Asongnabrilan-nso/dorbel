@@ -20,7 +20,7 @@ and per-subsystem bring-up tests.
 - [Code base](#code-base) · [Build order and test status](#build-order-and-test-status)
 - [Dorbel V1](#dorbel-v1-camera--push-to-talk--dashboard--telegram)
   - [Bill of materials](#bill-of-materials)
-  - [Full setup guide](#full-setup-guide) (wiring → XIAO → UNO Q → Telegram bot → browser)
+  - [Full setup guide](#full-setup-guide) (wiring → Wi-Fi → XIAO → UNO Q → Telegram bot → browser)
   - [Live demo](#live-demo) (pre-flight checklist, run sheet, fallbacks)
   - [Troubleshooting](#troubleshooting)
 - [Finishing V1](#finishing-v1)
@@ -155,17 +155,18 @@ The repository holds two firmware targets, laid out so each tool opens its own p
   root) in VS Code / PlatformIO.
 
 ```
-app.yaml                  App Lab app metadata ("Dorbel"), exposes dashboard port 8000
+app.yaml                  App Lab app metadata ("Dorbel"), exposes dashboard ports 8000 + 8443
 sketch/                   UNO Q STM32 sketch: button, RGB, I²C master, Bridge RPC
   sketch.ino
   sketch.yaml             arduino:zephyr + Arduino_RouterBridge
 python/                   Linux side, standard library only (no pip installs)
   main.py                 polls the Bridge, keeps state + event log
-  dashboard.py            HTTP server on :8000 (page + JSON API)
+  dashboard.py            HTTP :8000 + HTTPS :8443 (page, JSON API, relays XIAO video/audio/photo)
   dashboard.html          video, status, push-to-talk, events
   users.html              enable/disable Telegram users
   notifier.py             Telegram bot: /start registration + door alerts with photo
   dorbel_config_example.py  settings template → copy to dorbel_config.py (gitignored)
+  certs/                  self-signed HTTPS certificate, made on first start (gitignored)
 xiao/                     XIAO PlatformIO project — open this folder in PlatformIO
   platformio.ini          board, PSRAM (qio_opi), huge_app partition, USB-CDC serial
   include/
@@ -180,7 +181,7 @@ xiao/                     XIAO PlatformIO project — open this folder in Platfo
     secrets.example.h     Wi-Fi credentials template → copy to secrets.h (gitignored)
   src/
     main.cpp              APP_MODE selector, camera setup, Wi-Fi, APP_MODE_DORBEL integration
-    app_httpd.cpp         HTTP servers: test-mode "/" + "/stream"; Dorbel mode :80 + :81
+    app_httpd.cpp         HTTP servers: test-mode "/" + "/stream"; Dorbel mode :80 (+ /capture) + :81
     intercom.cpp          ws://<xiao>/audio: mic → browser, browser → speaker, chime
     i2c_link.cpp          I²C slave at 0x08 (used by the test mode and Dorbel mode)
     speaker_test.cpp      MAX98357A over I2S port 1: tones + "ding-dong" chime
@@ -471,22 +472,26 @@ The Linux side is where the Flask dashboard and Telegram notifications from Tril
 ## Dorbel V1: camera + push-to-talk + dashboard + Telegram
 
 ```
-VIDEO   XIAO camera ──Wi-Fi── http://<xiao>:81/stream ──────────► browser
-LISTEN  XIAO mic    ──Wi-Fi── ws://<xiao>/audio (16 kHz PCM) ───► browser
-TALK    browser mic ──Wi-Fi── ws://<xiao>/audio ──► XIAO ──I2S──► MAX98357A
+VIDEO   XIAO :81/stream ──Wi-Fi──► UNO Q /stream ──https──► browser
+LISTEN  XIAO ws /audio  ──Wi-Fi──► UNO Q /audio  ──wss────► browser   (16 kHz PCM)
+TALK    browser mic ──wss──► UNO Q /audio ──Wi-Fi──► XIAO ──I2S──► MAX98357A
 RING    button ─► UNO Q ─I²C RING─► XIAO chime
-               └─► Bridge ─► python/main.py ─► Telegram + dashboard events
+               └─► Bridge ─► python/main.py ─► XIAO /capture (1600×1200 photo)
+                                            └─► Telegram (photo + alert) + dashboard events
 ```
 
-Video and audio go straight from the browser to the XIAO. The UNO Q serves the dashboard page
-and learns the XIAO's IP over I²C (`CMD_GET_IP`). The intercom is **half duplex**: while the
-homeowner holds TALK, the XIAO stops sending mic audio, so there is no feedback loop.
+The UNO Q serves the dashboard and **relays** the XIAO's video, audio and photo, so a browser
+only ever talks to the UNO Q. It learns the XIAO's IP over I²C (`CMD_GET_IP`) and must be able
+to reach that IP, which means **the XIAO and the UNO Q must be on the same Wi-Fi network**.
+The dashboard is served on `http://<unoq>:8000/` and `https://<unoq>:8443/`. Only the HTTPS
+one can use the microphone (browsers block it on plain http). The intercom is **half duplex**:
+while the homeowner holds TALK, the XIAO stops sending mic audio, so there is no feedback loop.
 
 ### XIAO endpoints (`APP_MODE_DORBEL`)
 
 | URL                       | What                                                     |
 |---------------------------|----------------------------------------------------------|
-| `http://<xiao>/`          | bare camera page (the "live video" link in alerts)       |
+| `http://<xiao>/`          | bare camera page, handy for testing the XIAO on its own  |
 | `http://<xiao>:81/stream` | MJPEG stream, on its own server so it never blocks audio. One viewer at a time |
 | `http://<xiao>/capture`   | one 1600×1200 JPEG (`CAPTURE_FRAMESIZE`), used for the Telegram alert photo |
 | `ws://<xiao>/audio`       | intercom: binary = 16 kHz 16-bit LE mono PCM both ways; text `talk:1` / `talk:0` |
@@ -504,13 +509,19 @@ homeowner holds TALK, the XIAO stops sending mic audio, so there is no feedback 
 | 2 | 4.7 kΩ resistors | I²C pull-ups to 3.3 V |
 | — | Jumper wires, breadboard | keep I²C wires short |
 | 2 | USB-C data cables | one per board (bench power and flashing) |
-| — | 2.4 GHz Wi-Fi with internet | XIAO is 2.4 GHz only; UNO Q needs internet for Telegram |
+| — | 2.4 GHz Wi-Fi with internet | XIAO is 2.4 GHz only. The UNO Q must join the **same** network. It needs internet for Telegram |
 | — | A phone with Telegram | receives the alerts |
-| — | A laptop or Android phone with Chrome/Edge | the dashboard (TALK needs Chrome/Edge, not iOS Safari) |
+| — | A laptop or phone with a modern browser | the dashboard (TALK uses the `https://` dashboard) |
 
 ### Full setup guide
 
 Do the steps in order. Each step has a check. Don't move on until it passes.
+
+> **The one rule that breaks everything if missed:** the XIAO and the UNO Q must be on the
+> **same 2.4 GHz Wi-Fi network** (same router, same `192.168.x.*` subnet). The XIAO can't join
+> 5 GHz networks. If the UNO Q is on a 5 GHz SSID (e.g. `MyWifi-5GHZ`) and the XIAO on a laptop
+> hotspot, the dashboard shows the status but the video never loads, TALK can't connect and the
+> Telegram alert has no photo. The log then says `Camera at <ip> is NOT reachable`.
 
 #### Step 1: Wire everything
 
@@ -528,14 +539,39 @@ XIAO 5V → MAX VIN    XIAO GND → MAX GND  MAX SPK+ / SPK- → speaker (never 
 
 **Check:** the grounds of both boards are connected, and there is one pair of pull-ups on SDA/SCL.
 
-#### Step 2: Flash the XIAO
+#### Step 2: Pick the Wi-Fi network
+
+Choose one **2.4 GHz** network with internet that both boards will use, usually your home
+router's 2.4 GHz SSID. A phone hotspot works too (on iPhone, turn on *Maximize
+Compatibility*). A Windows laptop hotspot gives `192.168.137.x` addresses and only works if the
+UNO Q joins it as well.
+
+See which network the UNO Q is on, and list the networks it can see (`FREQ` 24xx = 2.4 GHz):
+
+```bash
+nmcli -t -f ACTIVE,SSID,FREQ dev wifi | grep '^yes'    # current network
+nmcli -f SSID,FREQ,SIGNAL dev wifi list                # what's around
+```
+
+If the UNO Q is on a 5 GHz network, move it to the chosen 2.4 GHz one. Do this from the
+board's own desktop or over USB (`adb shell`), not over SSH, because the SSH session drops
+when the network changes:
+
+```bash
+sudo nmcli dev wifi connect "<SSID>" password "<password>"
+hostname -I                                            # the new UNO Q IP, e.g. 192.168.x.z
+```
+
+**Check:** `nmcli` shows the chosen SSID with a `24xx` frequency.
+
+#### Step 3: Flash the XIAO
 
 On your PC, with [PlatformIO](https://platformio.org/) installed (VS Code extension or CLI):
 
 ```bash
 cd xiao                                           # open THIS folder in PlatformIO, not the repo root
 cp include/secrets.example.h include/secrets.h    # first time only
-# edit include/secrets.h → WIFI_SSID / WIFI_PASSWORD of a 2.4 GHz network
+# edit include/secrets.h → WIFI_SSID / WIFI_PASSWORD of the network from Step 2
 pio run -t upload                                 # close any serial monitor first
 pio device monitor                                # 115200 baud
 ```
@@ -550,10 +586,13 @@ On Windows, use `~/.platformio/penv/Scripts/pio.exe` if `pio` isn't on PATH. Mak
 WiFi up: camera http://192.168.x.y/  stream http://192.168.x.y:81/stream  intercom ws://192.168.x.y/audio
 ```
 
-Write the IP down. Open `http://<xiao-ip>/` from a laptop on the same Wi-Fi. You should see
-live video. **Close that tab afterwards**, because the stream accepts only one viewer.
+Write the IP down. Its first three numbers must match the UNO Q's IP from Step 2 (e.g.
+`192.168.1.50` and `192.168.1.141`). If they don't (e.g. `192.168.137.19`), the XIAO joined a
+different network: fix `secrets.h` and flash again. To test the camera, open `http://<xiao-ip>/`
+from a laptop on the same Wi-Fi. **Close that tab afterwards**, because the stream accepts only
+one viewer.
 
-#### Step 3: Put the Dorbel app on the UNO Q
+#### Step 4: Put the Dorbel app on the UNO Q
 
 The UNO Q runs Linux. Get a shell on it, either over the network
 (`ssh arduino@<unoq-hostname>.local`) or over USB (`adb shell`). Then:
@@ -572,11 +611,13 @@ Telegram user DB are gitignored, so they survive updates.
 Edit `python/dorbel_config.py` (`nano dorbel_config.py`). Set at least:
 
 ```python
-DASHBOARD_URL = "http://192.168.x.z:8000/"   # the UNO Q LAN IP from `hostname -I`
+DASHBOARD_URL = "https://192.168.x.z:8443/"  # the UNO Q LAN IP from `hostname -I`
 ```
 
 App Lab runs the Python side in a container, so without this setting the Telegram alert could
-link to an internal `172.x` address. Leave `TELEGRAM_BOT_TOKEN` empty for now (Step 4).
+link to an internal `172.x` address. Use the `https://…:8443/` address so the link opens a
+dashboard where TALK works. Update it whenever the UNO Q's IP changes. Leave
+`TELEGRAM_BOT_TOKEN` empty for now (Step 5).
 
 **Check:** open **Arduino App Lab**. The app **Dorbel 🔔** is listed. Click **Run**. App Lab
 compiles and flashes `sketch/` to the STM32 and starts `python/main.py`. The Python console
@@ -584,17 +625,21 @@ shows:
 
 ```
 Telegram disabled: set TELEGRAM_BOT_TOKEN in python/dorbel_config.py
-Dorbel dashboard: http://192.168.x.z:8000/
+Dorbel dashboard: https://192.168.x.z:8443/
 [event] System started
 [event] MCU connected
 [event] XIAO online
 [event] Camera at 192.168.x.y
+[event] Camera reachable at 192.168.x.y
 ```
+
+If the last line says `Camera at 192.168.x.y is NOT reachable`, the boards are on different
+networks. Go back to Step 2.
 
 The RGB LED is **green**. If it's **blue**, the XIAO isn't answering on I²C. See
 [Subsystem 4](#subsystem-4-xiao--uno-q-ic-link).
 
-#### Step 4: Create and connect the Telegram bot
+#### Step 5: Create and connect the Telegram bot
 
 1. In Telegram, open **@BotFather** (the official one, with the blue check) and send `/newbot`.
 2. Give it a display name (e.g. `Dorbel Front Door`), then a username that ends in `bot`
@@ -623,21 +668,24 @@ The RGB LED is **green**. If it's **blue**, the XIAO isn't answering on I²C. Se
 8. **Register each homeowner.** On their phone, open `t.me/<bot_username>` and tap **Start**
    (or send `/start`). The bot replies *"Welcome to Dorbel 🔔 … You are registered."* and the
    dashboard log shows `Telegram user registered: <name>`.
-9. **Enable them.** Open `http://<unoq-ip>:8000/users` (the **Telegram users** link at the
+9. **Enable them.** Open `https://<unoq-ip>:8443/users` (the **Telegram users** link at the
    bottom of the dashboard) and click the toggle next to each name. New users start
    **disabled**, so strangers who find the bot get nothing.
 
 How it works (`python/notifier.py`): the bot long-polls Telegram's `getUpdates`, so it needs
 no public IP, port forwarding or webhook. Users live in SQLite (`python/dorbel_users.db`,
-max 10). Each ring sends enabled users the `/capture` photo from the XIAO, with the alert text
-as the caption. If the photo can't be fetched within 3 s, the text goes out alone. Alerts are
-limited to one every 10 s.
+max 10). On each ring, the UNO Q asks the XIAO for a **1600×1200** photo (`/capture`; the XIAO
+switches to full resolution for that one shot, see `CAPTURE_FRAMESIZE` in
+`xiao/src/app_httpd.cpp`) and sends it to enabled users with the alert text as the caption.
+It tries the photo 3 times. If that fails, the text goes out alone with
+`📷 No photo: camera not reachable`. Each Telegram send is also retried 3 times, so a short
+internet drop doesn't lose the alert. Alerts are limited to one every 10 s.
 
 **Check:** press the doorbell. Within a few seconds the enabled phone receives a photo with
 `🔔 DORBEL ALERT … Someone is at the door.`, and the dashboard log shows
 `Telegram alert sent to 1/1`.
 
-#### Step 5: Prepare the browser for push-to-talk
+#### Step 6: Open the dashboard and allow the microphone
 
 Browsers only allow the microphone (`getUserMedia`) on `https://` or `localhost`, so the
 dashboard is also served over HTTPS on port **8443** with a self-signed certificate (created
@@ -659,15 +707,17 @@ You're ready to demo.
 
 #### Pre-flight checklist (do this 30 min before)
 
-- [ ] All devices are on the **same 2.4 GHz network**: XIAO, UNO Q, the demo laptop and the
-      phone (the phone needs internet for Telegram). The venue's Wi-Fi often has client
+- [ ] The XIAO and UNO Q are on the **same 2.4 GHz network** (the log shows `Camera reachable
+      at <ip>`). The demo laptop must reach the UNO Q, and the phone needs internet for
+      Telegram. The venue's Wi-Fi often has client
       isolation or captive portals. Bring your own travel router or phone hotspot (on iPhone:
       *Maximize Compatibility* = 2.4 GHz) and set its SSID in `secrets.h` and on the UNO Q
       ahead of time.
 - [ ] Power both boards. Power-up order doesn't matter. The UNO Q picks up the XIAO within
       ~5 s.
-- [ ] In App Lab, run **Dorbel**. LED is green, and the console shows `Camera at <ip>`.
-- [ ] Dashboard open on the demo laptop. SYSTEM `● ONLINE`, live video.
+- [ ] In App Lab, run **Dorbel**. LED is green, and the console shows `Camera reachable at <ip>`.
+- [ ] `https://<unoq-ip>:8443/` open on the demo laptop (certificate accepted). SYSTEM
+      `● ONLINE`, live video.
       **No other tab or device has the stream open.**
 - [ ] Telegram open on the phone. The user is **enabled** on `/users`.
 - [ ] Do one full dry run: ring, then listen, then talk. Wait **10 s** after the dry-run ring
@@ -697,7 +747,7 @@ Keep the laptop away from the door speaker to avoid echo when Listen is on.
 |---------|---------------|
 | Video frozen / "only one viewer" | Close other tabs/devices viewing the stream. Reload the dashboard. |
 | No Telegram message | Wait 10 s (rate limit) and ring again. Otherwise show the dashboard event log line `Telegram alert sent…` / `No enabled Telegram users`. |
-| TALK blocked | Carry on with Listen only, and explain the https/secure-context limitation. |
+| TALK blocked | Make sure the address starts with `https://` and port 8443. Otherwise carry on with Listen only. |
 | SYSTEM `XIAO OFFLINE`, LED blue | Re-seat the I²C/GND wires, or reset the XIAO (it rejoins in ~10 s). |
 | Nothing at all | Re-run the app in App Lab (~30 s). Keep a screen recording of a good run as a last resort. |
 
@@ -705,8 +755,11 @@ Keep the laptop away from the door speaker to avoid echo when Listen is on.
 
 | Symptom                               | Likely cause                                               |
 |---------------------------------------|------------------------------------------------------------|
-| Video says "only one viewer"          | Another tab or device already has `:81/stream` open.       |
-| Dashboard unreachable from the phone  | Not on the same network, client isolation, or App Lab didn't publish port 8000. Check `ports:` in `app.yaml`. |
+| Status loads but video keeps loading, no photo in alerts | XIAO and UNO Q on different networks. The log says `Camera at <ip> is NOT reachable`. See [Step 2](#step-2-pick-the-wi-fi-network). |
+| Video says "not reachable … only one viewer" | Boards on different networks (above), or another tab/device already has the stream open. |
+| TALK says "The microphone needs the secure dashboard" | You're on `http://…:8000`. Open the `https://…:8443/` link it shows. |
+| Browser warns "Your connection is not private" | Expected: the certificate is self-signed. Choose **Advanced → Proceed** once. Delete `python/certs/` and restart to make a new one. |
+| Dashboard unreachable from the phone  | Phone not on a network that reaches the UNO Q (e.g. on mobile data), client isolation, or App Lab didn't publish ports 8000/8443. Check `ports:` in `app.yaml`. |
 | SYSTEM `MCU OFFLINE`                  | The STM32 sketch isn't running or hasn't registered its RPCs yet. Re-run the app. |
 | SYSTEM `XIAO OFFLINE`, LED blue       | I²C wiring/pull-ups/GND, or the XIAO isn't in `APP_MODE_DORBEL`. |
 | SYSTEM `XIAO NO WI-FI`                | Wrong SSID/password in `xiao/include/secrets.h`, or a 5 GHz-only network. |
@@ -714,10 +767,11 @@ Keep the laptop away from the door speaker to avoid echo when Listen is on.
 | `Telegram disabled` in the console    | `TELEGRAM_BOT_TOKEN` empty, or `dorbel_config.py` not in `python/` next to `main.py`. |
 | `Telegram polling error: HTTP Error 401` | Wrong token. Copy it again from BotFather (`/mybots` → API Token). |
 | `Telegram polling error: HTTP Error 409` | Another copy of the app (e.g. on your PC) is polling the same bot, or a webhook is set. Stop the other copy, or run `curl https://api.telegram.org/bot<TOKEN>/deleteWebhook`. |
-| `Telegram polling error: <urlopen error ...>` | The UNO Q has no internet or DNS. Test with `curl https://api.telegram.org`. |
+| `Telegram polling error: <urlopen error ...>` / `Temporary failure in name resolution` | The UNO Q has no internet or DNS for a moment. Polling and alerts retry on their own. If it persists, test with `curl https://api.telegram.org`. |
 | `/start` gets no reply                | App not running, or token error (see above). |
 | Event `No enabled Telegram users to alert` | Enable the user on the `/users` page. |
-| Alert arrives without a photo         | The UNO Q can't reach the XIAO (different network?) or the IP is unknown. The log says `Camera at <ip> is NOT reachable` in that case. |
+| Alert arrives without a photo         | The UNO Q can't reach the XIAO (different network, see Step 2), or the XIAO still runs firmware from before `CAPTURE_FRAMESIZE`. |
+| Photo is glitchy or has grey stripes  | Lower `CAPTURE_FRAMESIZE` in `xiao/src/app_httpd.cpp` to `FRAMESIZE_SXGA` or `FRAMESIZE_XGA` and reflash. |
 | Talk audio choppy                     | Weak Wi-Fi. The XIAO buffers 100 ms; check RSSI in the serial scan. |
 | Door audio too quiet or loud          | `MIC_GAIN` in `xiao/src/intercom.cpp` (default 8).          |
 | No camera IP on the dashboard         | Old UNO Q sketch without `get_xiao_ip`, or set `XIAO_HOST` in `dorbel_config.py`. |
@@ -744,6 +798,5 @@ validation and packaging:
 - [ ] Move from bench USB power to the battery + 5 V buck described in [Power](#power).
 - [ ] Record a short video of the demo for the project write-up.
 
-Ideas for after V1: a door reed switch (DOOR state), HTTPS on the dashboard so TALK works on
-every browser including iOS, motion-triggered alerts from the camera, and Telegram inline
-buttons ("Talk now" / "Ignore").
+Ideas for after V1: a door reed switch (DOOR state), motion-triggered alerts from the camera,
+and Telegram inline buttons ("Talk now" / "Ignore").
