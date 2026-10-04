@@ -10,3 +10,7 @@ xiao/include/secrets.h
 python/dorbel_config.py
 python/dorbel_users.db
 __pycache__/
+
+# Stray PlatformIO output if the repo root is opened instead of xiao/
+/.pio/
+/include/secrets.h
