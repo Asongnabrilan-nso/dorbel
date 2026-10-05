@@ -1,9 +1,11 @@
 # Dorbel - UNO Q Linux side.
 #
 # Polls the STM32 over the Bridge, keeps the doorbell state and event log,
-# serves the dashboard (dashboard.py) and sends Telegram alerts (notifier.py).
+# serves the dashboard (dashboard.py), runs AI person detection on the live
+# video (vision.py) and sends Telegram alerts (notifier.py).
 #
 #   button -> STM32 -> Bridge -> here -> Telegram + dashboard events
+#   XIAO video -> CameraHub -> Video Object Detection brick -> person events
 #
 # The dashboard relays the XIAO's video and intercom audio (see dashboard.py),
 # so browsers only need to reach this board. The XIAO reports its own IP over
@@ -21,7 +23,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from arduino.app_utils import App, Bridge
 
 import dashboard
+from camera_hub import CameraHub
 from notifier import TelegramNotifier
+from vision import PersonDetector
 
 try:
     import dorbel_config as config
@@ -34,7 +38,7 @@ STATUS_AUDIO = 0x04
 STATUS_TALK = 0x08
 
 PRESSED_SHOW_S = 10    # dashboard shows DOORBELL: PRESSED this long after a ring
-VISITOR_WINDOW_S = 120 # VISITOR: PRESENT this long after a ring or talk
+VISITOR_WINDOW_S = 120 # VISITOR: PRESENT this long after a ring, talk or person
 
 
 class DorbelState:
@@ -75,9 +79,65 @@ class DorbelState:
 
 
 state = DorbelState()
-notifier = TelegramNotifier(config.TELEGRAM_BOT_TOKEN, state.add_event)
+
+
+def current_xiao_ip():
+    with state.lock:
+        return state.xiao_ip
+
+
+def snapshot_jpeg():
+    """Newest live frame, a fallback when the full-resolution photo fails."""
+    return camera.latest()[1]
+
+
+def ring_photo():
+    """Full-resolution photo for ring alerts and /photo."""
+    return camera.capture() or snapshot_jpeg()
+
+
+def status_text():
+    s = state.snapshot()
+    ai = detector.snapshot() if detector else None
+    on = lambda ok: "✅" if ok else "❌"
+    lines = [
+        "🔔 Dorbel status",
+        "",
+        f"{on(s['mcu_online'])} UNO Q microcontroller",
+        f"{on(s['xiao_online'])} XIAO link",
+        f"{on(s['camera'] and camera.connected)} Camera",
+        f"{on(ai and ai['running'])} AI person detection",
+        "",
+        f"Person at door: {'YES (' + str(ai['count']) + ')' if ai and ai['person'] else 'no'}",
+        f"Last person seen: {(ai and ai['last_seen']) or '-'}",
+        f"Dashboard: {dashboard_url}",
+    ]
+    return "\n".join(lines)
+
+
+camera = CameraHub(current_xiao_ip)
+notifier = TelegramNotifier(config.TELEGRAM_BOT_TOKEN, state.add_event, status_text, ring_photo)
+
+
+def on_person_arrived(jpeg):
+    with state.lock:
+        state.last_activity = time.time()
+    state.add_event("AI: person detected at the door")
+    if getattr(config, "PERSON_ALERTS", True):
+        notifier.alert(
+            f"👤 Person at the door\n\nSeen by Dorbel's AI at {time.strftime('%H:%M')}.\n\n"
+            f"Live video & talk: {dashboard_url}",
+            jpeg or snapshot_jpeg(), kind="person",
+            interval=getattr(config, "PERSON_ALERT_INTERVAL_S", 120))
+
+
+detector = None
+if getattr(config, "PERSON_DETECTION", True):
+    detector = PersonDetector(camera, on_person_arrived,
+                              confidence=getattr(config, "PERSON_CONFIDENCE", 0.5))
+
 https_port = getattr(config, "DASHBOARD_HTTPS_PORT", 8443)
-https_up = dashboard.start(state, notifier, config.DASHBOARD_PORT, https_port)
+https_up = dashboard.start(state, notifier, camera, detector, config.DASHBOARD_PORT, https_port)
 
 if config.DASHBOARD_URL:
     dashboard_url = config.DASHBOARD_URL
@@ -124,8 +184,7 @@ def on_ring():
         "",
         f"Live video & talk: {dashboard_url}",
     ]
-    photo_url = f"http://{xiao_ip}/capture" if xiao_ip else None
-    notifier.alert("\n".join(lines), photo_url)
+    notifier.alert("\n".join(lines), ring_photo)
 
 
 def loop():

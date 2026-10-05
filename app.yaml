@@ -1,7 +1,17 @@
 name: Dorbel
-description: "UNO Q side of Dorbel - doorbell button, RGB LED, I2C link to the XIAO, dashboard and Telegram alerts."
+description: "UNO Q side of Dorbel - doorbell button, RGB LED, I2C link to the XIAO, AI person detection, dashboard and Telegram alerts."
 ports:
 - 8000
 - 8443
-bricks: []
+bricks:
+# The camera is the XIAO over Wi-Fi (python/camera_hub.py), not a USB camera.
+- arduino:video_object_detection:
+    model: yolox-object-detection
+    devices:
+    - remote_camera_0
+- arduino:telegram_bot:
+    variables:
+      # Keep the real token out of git: put it in python/dorbel_config.py.
+      # A token pasted here (App Lab > Brick Configuration) works too.
+      TELEGRAM_BOT_TOKEN: set-in-dorbel_config
 icon: 🔔

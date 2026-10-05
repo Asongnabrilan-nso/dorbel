@@ -1,23 +1,24 @@
-# Telegram alerts for Dorbel, following the Q04 Trillo flow:
-#   1. a homeowner finds the bot and sends /start -> registered, disabled
-#   2. they are enabled on the dashboard's /users page
-#   3. every doorbell press sends enabled users a photo + alert text
+# Telegram alerts for Dorbel, built on the App Lab "Telegram Bot" brick.
 #
-# Talks to the Bot API directly with urllib, so App Lab needs no extra
-# Python packages.
+#   1. a homeowner opens the bot and sends /start -> registered, alerts off
+#   2. they are enabled on the dashboard's /users page
+#   3. a doorbell press sends enabled users a photo + alert text
+#   4. the AI person detector sends enabled users a photo when someone arrives
+#
+# Enabled users can also ask the bot for /photo and /status at any time.
+# The token comes from TELEGRAM_BOT_TOKEN in python/dorbel_config.py (kept out
+# of git), or from the Telegram Bot brick configuration in App Lab.
 
-import json
 import os
 import sqlite3
 import threading
 import time
-import urllib.request
-import uuid
+
+from arduino.app_bricks.telegram_bot import TelegramBot, Sender, Message
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dorbel_users.db")
-ALERT_INTERVAL_S = 10  # at most one alert per 10 s, like Trillo
+ALERT_INTERVAL_S = 10  # at most one ring alert per 10 s, like Trillo
 MAX_USERS = 10
-SEND_ATTEMPTS = 3
 
 
 class UserDB:
@@ -71,129 +72,104 @@ class UserDB:
 
 
 class TelegramNotifier:
-    def __init__(self, token, log_event):
-        self.token = token
+    def __init__(self, token, log_event, status_text, snapshot):
+        """status_text() -> str for /status; snapshot() -> JPEG bytes or None for /photo."""
         self.log_event = log_event
+        self.status_text = status_text
+        self.snapshot = snapshot
         self.users = UserDB()
-        self._last_alert = 0.0
-        if token:
-            threading.Thread(target=self._poll_updates, daemon=True).start()
-        else:
-            print("Telegram disabled: set TELEGRAM_BOT_TOKEN in python/dorbel_config.py")
+        self._last_alert = {}
+        self.bot = None
+
+        # A real token always has a ":"; app.yaml only holds a placeholder by default.
+        env_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        token = token or (env_token if ":" in env_token else "")
+        if not token:
+            print("Telegram disabled: set TELEGRAM_BOT_TOKEN in the Telegram Bot brick "
+                  "configuration or in python/dorbel_config.py")
+            return
+        # Created before App.run(), so App Lab starts and stops the brick with the app.
+        self.bot = TelegramBot(token=token)
+        self.bot.add_command("start", self._cmd_start, "Register for door alerts")
+        self.bot.add_command("photo", self._cmd_photo, "Photo from the door camera")
+        self.bot.add_command("status", self._cmd_status, "Dorbel system status")
+        self.bot.add_command("help", self._cmd_help, "What this bot can do")
 
     @property
     def enabled(self):
-        return bool(self.token)
+        return self.bot is not None
 
-    # ---- Bot API -------------------------------------------------------
+    # ---- Commands --------------------------------------------------------
 
-    def _api(self, method, payload=None, timeout=10):
-        url = f"https://api.telegram.org/bot{self.token}/{method}"
-        data = json.dumps(payload or {}).encode()
-        req = urllib.request.Request(url, data, {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.load(resp)
-
-    def _send_photo(self, chat_id, photo, caption):
-        boundary = uuid.uuid4().hex
-        parts = []
-        for name, value in (("chat_id", str(chat_id)), ("caption", caption)):
-            parts.append(
-                f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode()
-            )
-        parts.append(
-            f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="door.jpg"\r\n'
-            "Content-Type: image/jpeg\r\n\r\n".encode()
-            + photo
-            + b"\r\n"
-        )
-        parts.append(f"--{boundary}--\r\n".encode())
-        req = urllib.request.Request(
-            f"https://api.telegram.org/bot{self.token}/sendPhoto",
-            b"".join(parts),
-            {"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.load(resp)
-
-    # ---- /start registration -------------------------------------------
-
-    def _poll_updates(self):
-        offset = 0
-        while True:
-            try:
-                result = self._api("getUpdates", {"offset": offset, "timeout": 25}, timeout=35)
-                for update in result.get("result", []):
-                    offset = update["update_id"] + 1
-                    self._handle_update(update)
-            except Exception as e:
-                print(f"Telegram polling error: {e}")
-                time.sleep(5)
-
-    def _handle_update(self, update):
-        message = update.get("message") or {}
-        text = (message.get("text") or "").strip()
-        chat = message.get("chat") or {}
-        if not text.startswith("/start") or "id" not in chat:
-            return
-
-        sender = message.get("from") or {}
-        name = " ".join(filter(None, [sender.get("first_name"), sender.get("last_name")]))
-        name = name or sender.get("username") or f"user_{chat['id']}"
-
-        if self.users.register(chat["id"], name):
+    def _cmd_start(self, sender: Sender, message: Message):
+        name = " ".join(filter(None, [sender.first_name, sender.last_name]))
+        name = name or sender.username or f"user_{sender.chat_id}"
+        if self.users.register(sender.chat_id, name):
             self.log_event(f"Telegram user registered: {name}")
-        self._api("sendMessage", {
-            "chat_id": chat["id"],
-            "text": "Welcome to Dorbel 🔔\n\nYou are registered. Ask the homeowner to "
-                    "enable you on the dashboard's Users page to receive door alerts.",
-        })
+        sender.reply("Welcome to Dorbel 🔔\n\nYou are registered. Ask the homeowner to "
+                     "enable you on the dashboard's Users page to receive door alerts.")
 
-    # ---- Alerts --------------------------------------------------------
+    def _allowed(self, sender):
+        if sender.chat_id in self.users.enabled_chat_ids():
+            return True
+        sender.reply("You are not enabled yet. Send /start, then ask the homeowner to "
+                     "enable you on the dashboard's Users page.")
+        return False
 
-    def alert(self, text, photo_url=None):
-        """Sends text (with a camera photo when available) without blocking the caller."""
-        if not self.token:
+    def _cmd_photo(self, sender: Sender, message: Message):
+        if not self._allowed(sender):
+            return
+        photo = self.snapshot()
+        if photo:
+            sender.reply_photo(photo, f"📷 Door camera, {time.strftime('%H:%M:%S')}")
+        else:
+            sender.reply("📷 Camera not reachable right now.")
+
+    def _cmd_status(self, sender: Sender, message: Message):
+        if self._allowed(sender):
+            sender.reply(self.status_text())
+
+    def _cmd_help(self, sender: Sender, message: Message):
+        sender.reply("🔔 Dorbel bot\n\n"
+                     "/start - register for door alerts\n"
+                     "/photo - photo from the door camera\n"
+                     "/status - doorbell, camera and AI status\n\n"
+                     "Alerts arrive when someone rings, and when the AI sees a person at the door.")
+
+    # ---- Alerts ----------------------------------------------------------
+
+    def alert(self, text, photo=None, kind="ring", interval=ALERT_INTERVAL_S):
+        """Sends text + photo to enabled users without blocking the caller.
+
+        photo is JPEG bytes, a function returning them, or None. Each kind of
+        alert is rate-limited on its own, so a person alert never hides a ring.
+        """
+        if not self.bot:
             return
         now = time.time()
-        if now - self._last_alert < ALERT_INTERVAL_S:
+        if now - self._last_alert.get(kind, 0) < interval:
             return
-        self._last_alert = now
-        threading.Thread(target=self._send_alert, args=(text, photo_url), daemon=True).start()
+        self._last_alert[kind] = now
+        threading.Thread(target=self._send_alert, args=(text, photo), daemon=True).start()
 
-    def _snapshot(self, url, attempts=3):
-        for attempt in range(attempts):
-            try:
-                with urllib.request.urlopen(url, timeout=5) as resp:
-                    return resp.read()
-            except Exception as e:
-                print(f"Snapshot attempt {attempt + 1} failed ({url}): {e}")
-                time.sleep(0.5)
-        self.log_event("Snapshot failed: camera not reachable")
-        return None
-
-    def _send_alert(self, text, photo_url):
+    def _send_alert(self, text, photo):
         chat_ids = self.users.enabled_chat_ids()
         if not chat_ids:
             self.log_event("No enabled Telegram users to alert")
             return
 
-        photo = self._snapshot(photo_url) if photo_url else None
+        if callable(photo):
+            photo = photo()
         if not photo:
+            self.log_event("Snapshot failed: camera not reachable")
             text += "\n\n📷 No photo: camera not reachable."
 
+        # The brick retries each send itself.
         sent = 0
         for chat_id in chat_ids:
-            # Retry, so a short internet/DNS drop doesn't lose the alert.
-            for attempt in range(SEND_ATTEMPTS):
-                try:
-                    if photo:
-                        self._send_photo(chat_id, photo, text)
-                    else:
-                        self._api("sendMessage", {"chat_id": chat_id, "text": text})
-                    sent += 1
-                    break
-                except Exception as e:
-                    print(f"Telegram send to {chat_id} failed (attempt {attempt + 1}): {e}")
-                    time.sleep(3)
+            if photo:
+                ok = self.bot.send_photo(chat_id, photo, text)
+            else:
+                ok = self.bot.send_message(chat_id, text)
+            sent += bool(ok)
         self.log_event(f"Telegram alert sent to {sent}/{len(chat_ids)}")

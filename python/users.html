@@ -29,7 +29,7 @@
 async function load() {
   const data = await (await fetch("/api/users")).json();
   if (!data.telegram) document.getElementById("intro").textContent =
-    "Telegram is off: set TELEGRAM_BOT_TOKEN in python/dorbel_config.py and restart the app.";
+    "Telegram is off: set the bot token in App Lab (Telegram Bot brick → Brick Configuration) and restart the app.";
   const esc = (s) => String(s).replace(/[<>&"]/g, "");
   document.getElementById("users").innerHTML = data.users.length ? data.users.map(u => `
     <tr><td>${esc(u.name)}</td>

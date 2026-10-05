@@ -43,6 +43,17 @@
   .events li { padding:3px 0; } .events time { color:var(--dim); margin-right:10px;
            font-variant-numeric:tabular-nums; }
   footer { text-align:center; font-size:13px; } footer a { color:var(--dim); }
+  .badge { position:absolute; top:10px; left:10px; padding:4px 10px; border-radius:6px;
+           background:var(--amber); color:#000; font-weight:700; font-size:13px;
+           letter-spacing:.06em; display:none; }
+  .ai h2 { font-size:13px; letter-spacing:.08em; color:var(--dim); margin:0;
+           padding:10px 16px 0; }
+  .ai .shot { position:relative; min-height:56px; background:#000; margin:10px 16px 0;
+              border-radius:8px; overflow:hidden; }
+  .ai .shot.has { aspect-ratio:4/3; }
+  .ai .shot img { width:100%; height:100%; object-fit:contain; display:none; }
+  .ai .shot .msg { position:absolute; inset:0; display:flex; align-items:center;
+                   justify-content:center; color:var(--dim); font-size:13px; }
 </style>
 </head>
 <body>
@@ -52,6 +63,7 @@
   <section class="video">
     <img id="video" alt="">
     <div class="msg" id="videoMsg">Waiting for the XIAO camera…</div>
+    <div class="badge" id="personBadge">👤 PERSON</div>
   </section>
 
   <section class="rows">
@@ -60,6 +72,19 @@
     <div class="row"><b>VISITOR</b><span class="val idle" id="sVisitor">—</span></div>
     <div class="row"><b>DOORBELL</b><span class="val idle" id="sBell">—</span></div>
     <div class="row"><b>INTERCOM</b><span class="val idle" id="sTalk">—</span></div>
+  </section>
+
+  <section class="ai">
+    <h2>AI PERSON DETECTION</h2>
+    <div class="shot">
+      <img id="aiShot" alt="Last person detected">
+      <div class="msg" id="aiMsg">No person seen yet</div>
+    </div>
+    <div class="rows">
+      <div class="row"><b>AI</b><span class="val idle" id="sAi">—</span></div>
+      <div class="row"><b>PERSON</b><span class="val idle" id="sPerson">—</span></div>
+      <div class="row"><b>LAST SEEN</b><span class="val idle" id="sSeen">—</span></div>
+    </div>
   </section>
 
   <section class="talk">
@@ -103,6 +128,8 @@ async function refresh() {
   else if (!s.xiao_wifi)   setVal($("sSystem"), "XIAO NO WI-FI", "warn");
   else                     setVal($("sSystem"), "ONLINE", "ok");
 
+  showDetection(s.detection);
+
   if (s.door === null) setVal($("sDoor"), "NO SENSOR", "idle");
   else setVal($("sDoor"), s.door ? "OPEN" : "CLOSED", s.door ? "warn" : "ok");
   setVal($("sVisitor"), s.visitor_present ? "PRESENT" : "NONE", s.visitor_present ? "warn" : "idle");
@@ -121,11 +148,35 @@ async function refresh() {
   $("events").innerHTML = s.events.map(e =>
     `<li><time>${e.time}</time>${e.text.replace(/[<>&]/g, "")}</li>`).join("");
 }
+// AI person detection (Video Object Detection brick on the UNO Q).
+let aiFrame = 0;
+function showDetection(d) {
+  if (!d) {
+    setVal($("sAi"), "OFF", "idle");
+    $("aiMsg").textContent = "Person detection is off (PERSON_DETECTION in dorbel_config.py)";
+    return;
+  }
+  setVal($("sAi"), d.running ? "RUNNING · " + d.model : "WAITING FOR CAMERA", d.running ? "ok" : "warn");
+  setVal($("sPerson"), d.person ? `DETECTED (${d.count}) · ${Math.round(d.confidence * 100)}%` : "NONE",
+         d.person ? "warn" : "idle");
+  setVal($("sSeen"), d.last_seen || "—", d.last_seen ? "live" : "idle");
+  $("personBadge").style.display = d.person ? "block" : "none";
+  $("personBadge").textContent = `👤 PERSON ${d.count > 1 ? "×" + d.count + " " : ""}${Math.round(d.confidence * 100)}%`;
+  if (d.frame !== aiFrame) {
+    aiFrame = d.frame;
+    $("aiShot").src = `/detection.jpg?f=${aiFrame}`;
+  }
+}
+$("aiShot").onload = () => {
+  $("aiShot").style.display = "block"; $("aiMsg").style.display = "none";
+  $("aiShot").parentElement.classList.add("has");
+};
+
 $("video").onload = () => $("videoMsg").style.display = "none";
 $("video").onerror = () => {
   $("videoMsg").style.display = "flex";
   $("videoMsg").textContent = `Camera at ${xiaoIp || "?"} not reachable. Is the XIAO on the ` +
-    "same Wi-Fi as the UNO Q? (Only one viewer at a time.)";
+    "same Wi-Fi as the UNO Q?";
   setTimeout(() => { if (xiaoIp) $("video").src = `/stream?t=${Date.now()}`; }, 3000);
 };
 setInterval(refresh, 1000);

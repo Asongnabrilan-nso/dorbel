@@ -2,14 +2,17 @@
 #
 #   GET  /                        dashboard page (video + status + TALK + events)
 #   GET  /users                   Telegram user management page
-#   GET  /api/state               JSON status, polled by the dashboard every second
+#   GET  /api/state               JSON status + AI detection, polled every second
 #   GET  /api/users               registered Telegram users
 #   POST /api/users/<id>/toggle   enable / disable alerts for a user
 #   POST /api/users/<id>/delete   remove a user
-#   GET  /stream                  XIAO camera stream, relayed (XIAO :81/stream)
-#   GET  /snapshot                one JPEG from the XIAO (XIAO /capture)
+#   GET  /stream                  live camera (MJPEG) from the shared CameraHub
+#   GET  /snapshot                full-resolution JPEG (XIAO /capture, via the hub)
+#   GET  /detection.jpg           latest AI frame with person boxes drawn on it
 #   GET  /audio                   intercom WebSocket, relayed (XIAO ws /audio)
 #
+# The XIAO streams to one client only, so video comes from the CameraHub,
+# which also feeds the AI brick; any number of browsers can watch.
 # Relaying the XIAO through here means a browser only has to reach the UNO Q,
 # and the page stays on one origin, so it also works over HTTPS (needed for
 # the microphone). HTTPS uses a self-signed certificate made on first start.
@@ -77,7 +80,7 @@ def _pipe(a, b):
         pass
 
 
-def start(state, notifier, port, https_port=None):
+def start(state, notifier, camera, detector, port, https_port=None):
     def xiao_ip():
         with state.lock:
             return state.xiao_ip
@@ -111,6 +114,7 @@ def start(state, notifier, port, https_port=None):
             elif path == "/api/state":
                 data = state.snapshot()
                 data["telegram"] = notifier.enabled
+                data["detection"] = detector.snapshot() if detector else None
                 data["https_port"] = https_port
                 self._json(data)
             elif path == "/api/users":
@@ -119,6 +123,12 @@ def start(state, notifier, port, https_port=None):
                 self._relay_stream()
             elif path == "/snapshot":
                 self._relay_snapshot()
+            elif path == "/detection.jpg":
+                jpeg = detector.jpeg() if detector else None
+                if jpeg:
+                    self._send(200, jpeg, "image/jpeg")
+                else:
+                    self._json({"error": "no person seen yet"}, 404)
             elif path == "/audio":
                 self._relay_websocket()
             else:
@@ -134,34 +144,33 @@ def start(state, notifier, port, https_port=None):
             ip = self._xiao_or_503()
             if not ip:
                 return
-            try:
-                with urllib.request.urlopen(f"http://{ip}/capture", timeout=5) as resp:
-                    self._send(200, resp.read(), "image/jpeg")
-            except Exception as e:
-                self._json({"error": f"camera unreachable at {ip}: {e}"}, 502)
+            jpeg = camera.capture()
+            if jpeg:
+                self._send(200, jpeg, "image/jpeg")
+            else:
+                self._json({"error": f"camera unreachable at {ip}"}, 502)
 
         def _relay_stream(self):
-            ip = self._xiao_or_503()
-            if not ip:
+            if not xiao_ip():
+                self._json({"error": "XIAO address not known yet"}, 503)
                 return
+            seq, jpeg = camera.latest()
+            if jpeg is None:
+                seq, jpeg = camera.wait_newer(seq, timeout=5)
+                if jpeg is None:
+                    self._json({"error": f"camera unreachable at {xiao_ip()}"}, 502)
+                    return
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace;boundary=frame")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
             try:
-                upstream = urllib.request.urlopen(f"http://{ip}:81/stream", timeout=5)
-            except Exception as e:
-                self._json({"error": f"camera unreachable at {ip}: {e}"}, 502)
-                return
-            with upstream:
-                self.send_response(200)
-                self.send_header("Content-Type", upstream.headers["Content-Type"])
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                try:
-                    while True:
-                        chunk = upstream.read1(65536)
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                except (OSError, ValueError):
-                    pass  # viewer left or camera dropped
+                while jpeg is not None:
+                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n"
+                                     b"Content-Length: %d\r\n\r\n" % len(jpeg) + jpeg + b"\r\n")
+                    seq, jpeg = camera.wait_newer(seq, timeout=10)
+            except (OSError, ValueError):
+                pass  # viewer left
             self.close_connection = True
 
         def _relay_websocket(self):
