@@ -148,15 +148,26 @@ pio run -t upload
 pio device monitor                               # 115200 baud
 ```
 
+<p align="center">
+  <img src="media/software/firmware/PlatformIO/Screenshot%202026-10-05%20192359.png" width="49%" alt="The xiao project open in VS Code with PlatformIO, showing the APP_MODE options">
+  <img src="media/software/firmware/PlatformIO/Screenshot%202026-10-05%20192431.png" width="49%" alt="setup() and loop() picking the code for the selected APP_MODE">
+</p>
+<p align="center"><sub>The <code>xiao</code> project in VS Code with PlatformIO. <code>APP_MODE</code> picks what the XIAO runs.</sub></p>
+
 Make sure `xiao/src/main.cpp` has `#define APP_MODE APP_MODE_DORBEL`, which is the default. The other `APP_MODE_*` values test one part at a time (speaker, mic, camera, I²C) and are described in the [reference](docs/REFERENCE.md#build-order-and-test-status).
 
 <p align="center">
   <img src="media/software/firmware/PlatformIO/mic_test.png" width="80%" alt="PlatformIO serial monitor during the mic test">
 </p>
+<p align="center"><sub>The mic level test, one of the single subsystem modes</sub></p>
 
 > **✅ Check:** the serial log ends with a line like
 > `WiFi up: camera http://192.168.x.y/  stream http://192.168.x.y:81/stream  intercom ws://192.168.x.y/audio`.
 > Open `http://192.168.x.y/` on your PC to see the camera, then close the tab. The XIAO only streams to one client, and that slot belongs to the UNO Q.
+
+<p align="center">
+  <img src="media/software/firmware/PlatformIO/Screenshot%202026-10-05%20092541.png" width="90%" alt="Serial monitor showing the XIAO connected to Wi-Fi with its camera, stream and intercom addresses">
+</p>
 
 > **⚠️ Important:** the XIAO and the UNO Q must be on the **same 2.4 GHz network**. If they aren't, video, talk and photos all stop working.
 
@@ -200,6 +211,13 @@ sketch/       code for the MCU
 python/       code for Linux, starting from main.py
 ```
 
+Open App Lab on your PC. If it says **No boards found**, connect the UNO Q over USB or put it on the same network as your PC. Once the board shows up, App Lab opens on its **Apps** page, with **Examples** and **Inspirations** under *Learn and Explore* if you want to see how other apps are built.
+
+<p align="center">
+  <img src="media/software/firmware/UNO-Q/Screenshot%202026-10-05%20174927.png" width="49%" alt="App Lab start screen waiting for a board">
+  <img src="media/software/firmware/UNO-Q/Screenshot%202026-10-05%20192129.png" width="49%" alt="App Lab Inspirations page with example apps">
+</p>
+
 This repository is that folder. Open a terminal on the UNO Q (the board's desktop, `ssh arduino@<board>.local` or `adb shell`) and run:
 
 ```bash
@@ -216,11 +234,23 @@ In `python/dorbel_config.py`, set the dashboard address that the alerts will lin
 DASHBOARD_URL = "https://192.168.x.z:8443/"      # the UNO Q IP from hostname -I
 ```
 
-Now open **Arduino App Lab**. You'll find **Dorbel 🔔** under *My Apps*. Click **Run** and App Lab will:
+Go back to App Lab. **Dorbel 🔔** now shows on the **Apps** page. Open it to see the bricks, the files and the code, then click **Run**.
 
-1. compile the sketch and flash it to the MCU,
+<p align="center">
+  <img src="media/software/firmware/UNO-Q/Screenshot%202026-10-05%20192120.png" width="80%" alt="App Lab Apps page with the Dorbel app">
+</p>
+
+When you click **Run**, App Lab will:
+
+1. compile the sketch and flash it to the MCU (progress shows in the **App launch** tab),
 2. start the app's bricks,
-3. start `python/main.py` and show its output in the console.
+3. start `python/main.py` and show its output in the **Python** tab.
+
+<p align="center">
+  <img src="media/software/firmware/UNO-Q/Screenshot%202026-10-05%20192028.png" width="49%" alt="Dorbel sketch open in App Lab with the bricks listed">
+  <img src="media/software/firmware/UNO-Q/Screenshot%202026-10-05%20192107.png" width="49%" alt="Dorbel main.py open in App Lab with the Python tab">
+</p>
+<p align="center"><sub>Left: the sketch, with the app's bricks listed at the top. Right: <code>main.py</code> and the Python output.</sub></p>
 
 ### What the sketch does
 
@@ -235,7 +265,7 @@ Now open **Arduino App Lab**. You'll find **Dorbel 🔔** under *My Apps*. Click
 
 `python/main.py` calls these four times a second and handles everything else.
 
-> **✅ Check:** the console shows these lines, and pressing the button plays the chime at the door.
+> **✅ Check:** the **Python** tab shows these lines, and pressing the button plays the chime at the door.
 >
 > ```
 > Dorbel dashboard: https://192.168.x.z:8443/
@@ -265,7 +295,13 @@ This step adds the **Video Object Detection** brick. It runs the YoloX nano mode
 
 ### 7.1 Add the brick
 
-In App Lab, add **Video Object Detection** from the app's **Bricks** panel and keep the model *General purpose object detection, YoloX nano*. In `app.yaml` it looks like this:
+You can read about every brick in App Lab under **Bricks Manager > Bricks**. The **AI models** tab of Video Object Detection lists the models it can run.
+
+<p align="center">
+  <img src="media/software/firmware/UNO-Q/Screenshot%202026-10-05%20192149.png" width="80%" alt="Video Object Detection brick page in App Lab's Bricks Manager">
+</p>
+
+Add **Video Object Detection** to the app from the app's **Bricks** panel and keep the model *General purpose object detection, YoloX nano*. In `app.yaml` it looks like this:
 
 ```yaml
 bricks:
@@ -382,7 +418,7 @@ Each homeowner opens the bot and taps **Start**. New users begin with alerts tur
   <img src="media/software/telegram/Screenshot%202026-10-05%20100348.png" width="70%" alt="Telegram users page with alerts turned on">
 </p>
 
-> **✅ Check:** run the app. The console shows `Telegram bot initialized successfully`. Press the doorbell and the approved phone gets a photo alert within a few seconds.
+> **✅ Check:** run the app. The **Python** tab shows `Telegram bot initialized successfully`. Press the doorbell and the approved phone gets a photo alert within a few seconds.
 
 <p align="center">
   <img src="media/software/telegram/photo_2026-10-05_09-47-15.jpg" width="30%" alt="Telegram ring alert">
@@ -431,7 +467,7 @@ Screw the wall plate next to the door, then slide the doorbell onto its hook.
 
 ### 9.4 Test everything
 
-- [ ] The console shows `Camera reachable at <ip>` and `Telegram bot initialized successfully`
+- [ ] The **Python** tab shows `Camera reachable at <ip>` and `Telegram bot initialized successfully`
 - [ ] The LED is green and the dashboard shows SYSTEM `ONLINE` with live video
 - [ ] The AI panel shows `RUNNING`, and walking up brings a person badge, a boxed photo and a Telegram `👤` alert
 - [ ] Pressing the button plays the chime, turns the LED red, shows DOORBELL `PRESSED` and sends a Telegram `🔔` photo
@@ -454,7 +490,7 @@ Screw the wall plate next to the door, then slide the doorbell onto its hook.
 | Video never loads, alerts have no photo, log says `NOT reachable` | The XIAO and UNO Q are on different networks. Put both on the same 2.4 GHz Wi-Fi. |
 | LED is blue or SYSTEM shows `XIAO OFFLINE` | Check the I²C wiring: A4 and A5, shared GND, 4.7 kΩ pull-ups. The XIAO must run `APP_MODE_DORBEL`. |
 | App Lab says `Variable "TELEGRAM_BOT_TOKEN" is required` | Keep the placeholder under `arduino:telegram_bot` in `app.yaml`. |
-| Console says `Telegram disabled` | The token is missing from `python/dorbel_config.py`. |
+| The Python tab says `Telegram disabled` | The token is missing from `python/dorbel_config.py`. |
 | No alerts and the log says `No enabled Telegram users` | Turn alerts on for the user on the `/users` page. |
 | AI shows `WAITING FOR CAMERA` | Same cause as video not loading. |
 | AI misses people or reacts to shadows | Lower or raise `PERSON_CONFIDENCE` and check how the camera is aimed. |

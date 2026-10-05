@@ -17,3 +17,6 @@ __pycache__/
 
 # Self-signed HTTPS certificate made by the dashboard on first start
 python/certs/
+
+# Editor settings
+.vscode/
