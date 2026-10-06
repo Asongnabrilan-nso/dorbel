@@ -1,6 +1,14 @@
 # Dorbel: an AI smart doorbell on the Arduino UNO Q
 
 <p align="center">
+  <a href="https://youtu.be/h4dxzuG-TlU">
+    <img src="https://img.youtube.com/vi/h4dxzuG-TlU/maxresdefault.jpg" width="70%" alt="Watch the Dorbel demo video on YouTube">
+  </a>
+  <br>
+  <em>▶ Click to watch the demo video on YouTube</em>
+</p>
+
+<p align="center">
   <img src="media/product/Dorbel3.png" width="70%" alt="Dorbel with the light ring glowing while the button is pressed">
 </p>
 

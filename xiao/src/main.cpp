@@ -23,7 +23,7 @@
 #define APP_MODE_MIC_LEVEL     4
 #define APP_MODE_I2C_SLAVE     5
 #define APP_MODE_DORBEL        6 // V1 integration: camera + intercom + I2C link
-#define APP_MODE APP_MODE_DORBEL
+#define APP_MODE APP_MODE_DORBEL  
 
 void startCameraServer();
 void startDorbelServers(bool micOk, bool speakerOk);
