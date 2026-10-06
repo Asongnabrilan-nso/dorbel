@@ -111,6 +111,7 @@ const $ = (id) => document.getElementById(id);
 let httpsPort = 8443;
 const RATE = 16000; // XIAO audio: 16 kHz, 16-bit LE mono PCM both ways
 const TALK_GAIN = 2; // speech from getUserMedia is quiet next to the chime
+const LISTEN_GAIN = 8; // the XIAO's PDM mic peaks at only a few % of full scale
 const TAP_MS = 400;  // a press shorter than this latches TALK on until the next tap
 let xiaoIp = "";
 
@@ -183,7 +184,7 @@ setInterval(refresh, 1000);
 refresh();
 
 // -------------------------------------------------------------- intercom
-let ctx = null, ws = null, playAt = 0, talking = false;
+let ctx = null, ws = null, playAt = 0, talking = false, listenOut = null;
 let mic = null, rsPos = 0;
 let held = false, latched = false, pressAt = 0, talkSince = 0, loudest = 0;
 
@@ -203,13 +204,27 @@ function connect() {
   return ws;
 }
 
+// Visitor audio goes through a boost and a limiter, so speech is loud and
+// a slammed door doesn't clip.
+function listenOutput(c) {
+  if (!listenOut) {
+    const gain = c.createGain(), limit = c.createDynamicsCompressor();
+    gain.gain.value = LISTEN_GAIN;
+    limit.threshold.value = -6; limit.knee.value = 0; limit.ratio.value = 20;
+    limit.attack.value = 0.003; limit.release.value = 0.1;
+    gain.connect(limit); limit.connect(c.destination);
+    listenOut = gain;
+  }
+  return listenOut;
+}
+
 // Visitor audio: schedule each 16 kHz chunk right after the previous one.
 function play(buf) {
   const c = audioCtx(), pcm = new Int16Array(buf);
   const b = c.createBuffer(1, pcm.length, RATE), ch = b.getChannelData(0);
   for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
   const src = c.createBufferSource();
-  src.buffer = b; src.connect(c.destination);
+  src.buffer = b; src.connect(listenOutput(c));
   const now = c.currentTime;
   if (playAt < now + 0.05 || playAt > now + 0.6) playAt = now + 0.1; // resync, cap latency
   src.start(playAt);
